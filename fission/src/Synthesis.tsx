@@ -24,12 +24,15 @@ import { StateProvider } from "./ui/StateProvider.tsx"
 import { ThemeProvider } from "./ui/ThemeProvider.tsx"
 import { UIProvider } from "./ui/UIProvider.tsx"
 import CommandPalette from "@/ui/components/CommandPalette.tsx"
+import MainEnvironment from "./systems/scene/environments/MainEnvironment.ts"
+import PrototypeEnvironment from "./systems/scene/environments/PrototypeEnvironment.ts"
 
 function Synthesis() {
     const [consentPopupDisable, setConsentPopupDisable] = useState<boolean>(true)
+    const [prototypeUIEnabled, setPrototypeUIEnabled] = useState<boolean>(false);
 
     const mainLoopHandle = useRef(0)
-    const startMainLoop = async () => {
+    const startMainLoop = async (prototype: boolean) => {
         await World.initWorld()
         if (!PreferencesSystem.getGlobalPreference("ReportAnalytics") && !import.meta.env.DEV) {
             setConsentPopupDisable(false)
@@ -38,6 +41,12 @@ function Synthesis() {
         const mainLoop = () => {
             mainLoopHandle.current = requestAnimationFrame(mainLoop)
             World.updateWorld()
+        }
+
+        if (prototype) {
+            World.sceneRenderer.setEnvironment(new PrototypeEnvironment());
+        } else {
+            World.sceneRenderer.setEnvironment(new MainEnvironment());
         }
 
         mainLoop()
@@ -51,7 +60,12 @@ function Synthesis() {
         }
 
         globalOpenModal(MainMenuModal, {
-            startSingleplayerCallback: async () => await startMainLoop(),
+            startPrototypeCallback: async () => {
+                // Setup prototype environment
+                setPrototypeUIEnabled(true);
+                await startMainLoop(true)
+            },
+            startSingleplayerCallback: async () => await startMainLoop(false),
             startMultiplayerCallback: () => {
                 globalOpenModal(MultiplayerStartModal, {
                     startWorldCallback: async (name, room) => {
@@ -66,7 +80,7 @@ function Synthesis() {
                             if (isHost) {
                                 globalAddToast("info", "Room Code", room)
                             }
-                            await startMainLoop()
+                            await startMainLoop(false)
                             return true
                         }
                         return false
@@ -108,17 +122,22 @@ function Synthesis() {
                             <Scene useStats={import.meta.env.DEV} key="scene-in-toast-provider" />
                             <SceneOverlay />
                             <ContextMenu />
-                            <MultiplayerHUD />
-                            <MainHUD key={"main-hud"} />
-                            <UIRenderer />
-                            <CommandPalette />
-                            <ProgressNotifications key={"progress-notifications"} />
-                            <WPILibConnectionStatus />
-                            <DragModeIndicator />
+                            {prototypeUIEnabled ? (<>
+                                <UIRenderer />
+                                <DragModeIndicator />
+                            </>) : (<>
+                                <MultiplayerHUD />
+                                <MainHUD key={"main-hud"} />
+                                <UIRenderer />
+                                <CommandPalette />
+                                <ProgressNotifications key={"progress-notifications"} />
+                                <WPILibConnectionStatus />
+                                <DragModeIndicator />
 
-                            {!consentPopupDisable && (
-                                <AnalyticsConsent onClose={onDisableConsent} onConsent={onConsent} />
-                            )}
+                                {!consentPopupDisable && (
+                                    <AnalyticsConsent onClose={onDisableConsent} onConsent={onConsent} />
+                                )}
+                            </>)}
                         </UIProvider>
                     </StateProvider>
                 </SnackbarProvider>

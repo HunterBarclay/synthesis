@@ -2,11 +2,8 @@ import type Jolt from "@azaleacolburn/jolt-physics"
 import { EdgeDetectionMode, EffectComposer, EffectPass, RenderPass, SMAAEffect } from "postprocessing"
 import * as THREE from "three"
 import { CSM } from "three/examples/jsm/csm/CSM.js"
-import autodeskLogo from "@/assets/autodesk_symbol.png"
 import { MiraType } from "@/mirabuf/MirabufLoader"
 import MirabufSceneObject, { type RigidNodeAssociate } from "@/mirabuf/MirabufSceneObject"
-import fragmentShader from "@/shaders/fragment.glsl"
-import vertexShader from "@/shaders/vertex.glsl"
 import { type CameraControls, type CameraControlsType, CustomOrbitControls } from "@/systems/scene/CameraControls"
 import { type ContextData, ContextSupplierEvent } from "@/ui/components/ContextMenuData"
 import { globalOpenPanel } from "@/ui/components/GlobalUIControls"
@@ -23,15 +20,13 @@ import GizmoSceneObject from "./GizmoSceneObject"
 import type SceneObject from "./SceneObject"
 import ScreenInteractionHandler, { type InteractionEnd } from "./ScreenInteractionHandler"
 import type { LocalSceneObjectId, RemoteSceneObjectId } from "@/systems/multiplayer/types.ts"
+import SceneEnvironment from "./environments/SceneEnvironment"
 
 const CLEAR_COLOR = 0x121212
-const GROUND_COLOR = 0xfffef0
 
 const STANDARD_ASPECT = 16.0 / 9.0
-export const STANDARD_CAMERA_FOV_X = 110.0
+export const STANDARD_CAMERA_FOV_X = 60.0
 export const STANDARD_CAMERA_FOV_Y = STANDARD_CAMERA_FOV_X / STANDARD_ASPECT
-
-const textureLoader = new THREE.TextureLoader()
 
 let nextSceneObjectId = 1
 
@@ -39,8 +34,8 @@ class SceneRenderer extends WorldSystem {
     private _mainCamera: THREE.PerspectiveCamera
     private _scene: THREE.Scene
     private _renderer: THREE.WebGLRenderer
-    private _skybox: THREE.Mesh
     private _composer: EffectComposer
+    private _environment: SceneEnvironment | undefined
 
     private _sceneObjects: Map<number, SceneObject>
     private _gizmosOnMirabuf: Map<number, GizmoSceneObject> // maps of all the gizmos that are attached to a mirabuf scene object
@@ -49,7 +44,6 @@ class SceneRenderer extends WorldSystem {
 
     private _isPlacingAssembly: boolean = false
 
-    private _light: THREE.DirectionalLight | CSM | undefined
     private _screenInteractionHandler: ScreenInteractionHandler
 
     public get sceneObjects() {
@@ -64,7 +58,7 @@ class SceneRenderer extends WorldSystem {
     }
 
     public readonly mirabufSceneObjects = {
-        getAll: () => this.filterSceneObjects(obj => obj instanceof MirabufSceneObject),
+        getAll: () => this.filterSceneObjects<MirabufSceneObject>((obj: SceneObject): obj is MirabufSceneObject => obj instanceof MirabufSceneObject),
         findWhere: (predicate: (obj: MirabufSceneObject) => boolean) =>
             this.mirabufSceneObjects.getAll().find(predicate),
         getField: () => this.mirabufSceneObjects.findWhere(obj => obj.miraType == MiraType.FIELD),
@@ -131,73 +125,23 @@ class SceneRenderer extends WorldSystem {
         this._renderer.shadowMap.type = THREE.PCFSoftShadowMap
         this._renderer.setSize(window.innerWidth, window.innerHeight)
 
-        this.changeLighting(PreferencesSystem.getGraphicsPreferences().fancyShadows)
-
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.3)
-        this._scene.add(ambientLight)
-
-        const groundGeometry = new THREE.BoxGeometry(15, 0.2, 15)
-
-        const logoTexture = textureLoader.load(autodeskLogo)
-        logoTexture.wrapS = THREE.ClampToEdgeWrapping
-        logoTexture.wrapT = THREE.ClampToEdgeWrapping
-        logoTexture.center.set(0.5, 0.5) // Size Adjustment
-        logoTexture.repeat.set(2, 2)
-
-        const logoMaterial = new THREE.MeshToonMaterial({
-            map: logoTexture,
-            color: GROUND_COLOR,
-            shadowSide: THREE.DoubleSide,
-        })
-        if (this._light instanceof CSM) this._light.setupMaterial(logoMaterial)
-
-        const solidMaterial = this.createToonMaterial(GROUND_COLOR)
-
-        // Define each face individually
-        const materials = [
-            solidMaterial,
-            solidMaterial,
-            logoMaterial, // Logo on top face only
-            solidMaterial,
-            solidMaterial,
-            solidMaterial,
-        ]
-
-        const ground = new THREE.Mesh(groundGeometry, materials)
-        ground.position.set(0.0, -0.09, 0.0)
-        ground.receiveShadow = true
-        ground.castShadow = true
-        this._scene.add(ground)
-
-        // Adding spherical skybox mesh
-        const geometry = new THREE.SphereGeometry(1000)
-        const material = new THREE.ShaderMaterial({
-            vertexShader: vertexShader,
-            fragmentShader: fragmentShader,
-            side: THREE.BackSide,
-            uniforms: {
-                rColor: { value: 1.0 },
-                gColor: { value: 1.0 },
-                bColor: { value: 1.0 },
-            },
-        })
-
-        this._skybox = new THREE.Mesh(geometry, material)
-        this._skybox.receiveShadow = false
-        this._skybox.castShadow = false
-        this.scene.add(this._skybox)
-
         // POST PROCESSING: https://github.com/pmndrs/postprocessing
         this._composer = new EffectComposer(this._renderer)
         this._composer.addPass(new RenderPass(this._scene, this._mainCamera))
 
-        if (PreferencesSystem.getGraphicsPreferences().antiAliasing) {
-            const antiAliasEffect = new SMAAEffect({
-                edgeDetectionMode: EdgeDetectionMode.COLOR,
-            })
-            const antiAliasPass = new EffectPass(this._mainCamera, antiAliasEffect)
-            this._composer.addPass(antiAliasPass)
-        }
+        // if (PreferencesSystem.getGraphicsPreferences().antiAliasing) {
+        //     const antiAliasEffect = new SMAAEffect({
+        //         edgeDetectionMode: EdgeDetectionMode.COLOR,
+        //     })
+        //     const antiAliasPass = new EffectPass(this._mainCamera, antiAliasEffect)
+        //     this._composer.addPass(antiAliasPass)
+        // }
+
+        const antiAliasEffect = new SMAAEffect({
+            edgeDetectionMode: EdgeDetectionMode.COLOR,
+        })
+        const antiAliasPass = new EffectPass(this._mainCamera, antiAliasEffect)
+        this._composer.addPass(antiAliasPass)
 
         // Orbit controls
         this._screenInteractionHandler = new ScreenInteractionHandler(this._renderer.domElement)
@@ -241,9 +185,10 @@ class SceneRenderer extends WorldSystem {
         this._mainCamera.updateMatrixWorld()
 
         // updating the CSM light if it is enabled
-        if (this._light instanceof CSM) this._light.update()
+        // TODO: Fix
+        // if (this._light instanceof CSM) this._light.update()
 
-        this._skybox.position.copy(this._mainCamera.position)
+        if (this._environment) this._environment.updateEnvironment(deltaT)
 
         // Update the tags each frame if they are enabled in preferences
         if (PreferencesSystem.getGlobalPreference("RenderSceneTags")) new SceneOverlayEvent(SceneOverlayEventKey.UPDATE)
@@ -262,108 +207,38 @@ class SceneRenderer extends WorldSystem {
 
     /**
      * Changes the quality of lighting between cascading shadows and directional lights
-     *
-     * @param quality: string representing the quality of lighting - "Low", "Medium", "High"
      */
-    public changeLighting(fancyShadows: boolean): void {
-        // removing the previous lighting method
-        if (this._light instanceof THREE.DirectionalLight) {
-            this._scene.remove(this._light)
-        } else if (this._light instanceof CSM) {
-            this._light.dispose()
-            this._light.remove()
-        }
-
-        // setting the shadow map size
-        const graphicsSettings = PreferencesSystem.getGraphicsPreferences()
-        const shadowMapSize = Math.min(graphicsSettings.shadowMapSize, this._renderer.capabilities.maxTextureSize)
-
-        // setting the light to a basic directional light
-        if (!fancyShadows) {
-            const shadowCamSize = 15
-
-            this._light = new THREE.DirectionalLight(0xffffff, graphicsSettings.lightIntensity)
-            const lightDirection = new THREE.Vector3(1.0, -3.0, -2.0).normalize()
-            this._light.position.copy(lightDirection.clone().multiplyScalar(-20))
-            this._light.castShadow = true
-            this._light.shadow.camera.top = shadowCamSize
-            this._light.shadow.camera.bottom = -shadowCamSize
-            this._light.shadow.camera.left = -shadowCamSize
-            this._light.shadow.camera.right = shadowCamSize
-            this._light.shadow.mapSize = new THREE.Vector2(shadowMapSize, shadowMapSize)
-            this._light.shadow.blurSamples = 16
-            this._light.shadow.bias = 0.0
-            this._light.shadow.normalBias = 0.01
-            this._scene.add(this._light)
-        } else {
-            // setting the light to a cascading shadow map
-            this.createCSM(graphicsSettings)
-
-            // setting up all the materials
-            this.setupCSMMaterials()
-        }
-    }
-
-    public createCSM(settings: GraphicsPreferences) {
-        this._light = new CSM({
-            parent: this._scene,
-            camera: this._mainCamera,
-            cascades: settings.cascades,
-            lightDirection: new THREE.Vector3(1.0, -3.0, -2.0).normalize(),
-            lightIntensity: settings.lightIntensity,
-            shadowMapSize: settings.shadowMapSize,
-            mode: "custom",
-            maxFar: settings.maxFar,
-            shadowBias: -0.00001,
-            customSplitsCallback: (cascades: number, near: number, far: number, breaks: number[]) => {
-                const blend = 0.7
-                for (let i = 1; i < cascades; i++) {
-                    const uniformFactor = (near + ((far - near) * i) / cascades) / far
-                    const logarithmicFactor = (near * (far / near) ** (i / cascades)) / far
-                    const combinedFactor = uniformFactor * (1 - blend) + logarithmicFactor * blend
-
-                    breaks.push(combinedFactor)
-                }
-
-                breaks.push(1)
-            },
-        })
-        this._light.fade = true
-    }
-
-    private setupCSMMaterials() {
-        this._scene.children.forEach(child => {
-            if (child instanceof THREE.Mesh) {
-                if (this._light instanceof CSM) this._light.setupMaterial(child.material)
-            }
-        })
+    public updateGraphicsSettings(): void {
+        if (this._environment) this._environment.updateGraphicsSettings()
     }
 
     /** Sets the light intensity for both directional light and csm */
     public setLightIntensity(intensity: number) {
-        if (this._light instanceof THREE.DirectionalLight) {
-            this._light.intensity = intensity
-        } else if (this._light instanceof CSM) {
-            this._light.dispose()
-            this._light.remove()
+        // TODO: Fix
+        // if (this._light instanceof THREE.DirectionalLight) {
+        //     this._light.intensity = intensity
+        // } else if (this._light instanceof CSM) {
+        //     this._light.dispose()
+        //     this._light.remove()
 
-            this.createCSM({
-                ...PreferencesSystem.getGraphicsPreferences(),
-                lightIntensity: intensity,
-            })
-            this.setupCSMMaterials()
-        }
+        //     this.createCSM({
+        //         ...PreferencesSystem.getGraphicsPreferences(),
+        //         lightIntensity: intensity,
+        //     })
+        //     this.setupCSMMaterials()
+        // }
     }
 
     /** Changes the settings of the cascading shadows from the Quality Settings Panel */
     public changeCSMSettings(settings: GraphicsPreferences) {
-        if (!(this._light instanceof CSM)) return
+        // TODO: Fix
+        // if (!(this._light instanceof CSM)) return
 
-        this._light.dispose()
-        this._light.remove()
+        // this._light.dispose()
+        // this._light.remove()
 
-        this.createCSM(settings)
-        this.setupCSMMaterials()
+        // this.createCSM(settings)
+        // this.setupCSMMaterials()
     }
 
     public registerSceneObject<T extends SceneObject>(obj: T, idOverride?: number): LocalSceneObjectId {
@@ -424,7 +299,8 @@ class SceneRenderer extends WorldSystem {
     public createSphere(radius: number, material?: THREE.Material | undefined): THREE.Mesh {
         const geo = new THREE.SphereGeometry(radius)
         if (material) {
-            if (this._light instanceof CSM) this._light.setupMaterial(material)
+            // TODO: Fix
+            // if (this._light instanceof CSM) this._light.setupMaterial(material)
             return new THREE.Mesh(geo, material)
         } else {
             return new THREE.Mesh(geo, this.createToonMaterial())
@@ -453,7 +329,8 @@ class SceneRenderer extends WorldSystem {
             shadowSide: THREE.DoubleSide,
             gradientMap: gradientMap,
         })
-        if (this._light instanceof CSM) this._light.setupMaterial(material)
+        // TODO: Fix
+        // if (this._light instanceof CSM) this._light.setupMaterial(material)
         return material
     }
 
@@ -531,7 +408,8 @@ class SceneRenderer extends WorldSystem {
      * @param material
      */
     public setupMaterial(material: THREE.Material) {
-        if (this._light instanceof CSM) this._light.setupMaterial(material)
+        // TODO: Fix
+        // if (this._light instanceof CSM) this._light.setupMaterial(material)
     }
 
     /**
@@ -571,18 +449,16 @@ class SceneRenderer extends WorldSystem {
         }
         // All else fails, present default options.
         if (!miraSupplierData) {
-            miraSupplierData = { title: "The Scene", items: [] }
-            miraSupplierData.items.push({
-                name: "Add",
-                func: () => {
-                    globalOpenPanel(ImportMirabufPanel, {
-                        configurationType: "ROBOTS" as ConfigurationType,
-                    })
-                },
-            })
+            miraSupplierData = this._environment?.getEnvironmentContextData() ?? { title: "The Scene", items: [] }
         }
 
         ContextSupplierEvent.dispatch(miraSupplierData, e.position)
+    }
+
+    public setEnvironment(environment: SceneEnvironment) {
+        if (this._environment) this._environment.destroyEnvironment()
+        this._environment = environment
+        this._environment.createEnvironment()
     }
 }
 

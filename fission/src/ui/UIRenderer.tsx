@@ -31,7 +31,7 @@ export const UIRenderer: React.FC = () => {
         }
     }, [])
 
-    const showScoreboard = prefRenderScoreboard || inMatchMode
+    const showScoreboard = (prefRenderScoreboard || inMatchMode) && false
 
     return (
         <>

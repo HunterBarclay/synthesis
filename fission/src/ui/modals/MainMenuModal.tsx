@@ -12,13 +12,14 @@ import World from "@/systems/World"
 interface MainMenuCustomProps {
     startSingleplayerCallback: () => void
     startMultiplayerCallback: () => void
+    startPrototypeCallback: () => void
 }
 
 const MainMenuModal: React.FC<ModalImplProps<void, MainMenuCustomProps>> = ({ modal }) => {
     const { configureScreen, closeModal } = useUIContext()
     const { setIsMainMenuOpen } = useStateContext()
 
-    const { startSingleplayerCallback, startMultiplayerCallback } = modal!.props.custom!
+    const { startSingleplayerCallback, startMultiplayerCallback, startPrototypeCallback } = modal!.props.custom!
 
     useLayoutEffect(() => {
         setIsMainMenuOpen(true)
@@ -30,6 +31,18 @@ const MainMenuModal: React.FC<ModalImplProps<void, MainMenuCustomProps>> = ({ mo
     }, [])
     return (
         <Stack gap={1}>
+            <Button
+                onClick={() => {
+                    closeModal(CloseType.Accept)
+                    World.analyticsSystem?.event("Mode Selected", { mode: "Prototype" })
+                    startPrototypeCallback()
+                }}
+                fullWidth={true}
+                className="mt-1 mb-3 italic"
+            >
+                PROTOTYPE
+            </Button>
+
             <Button
                 onClick={() => {
                     closeModal(CloseType.Accept)

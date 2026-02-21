@@ -70,7 +70,6 @@ export function getLastDeltaT(): number {
 }
 
 // Friction constants
-const FLOOR_FRICTION = 0.7
 const DEFAULT_FRICTION = 0.7
 
 // Transition GH-1152, AARD-1885:
@@ -131,14 +130,7 @@ class PhysicsSystem extends WorldSystem {
         this._joltPhysSystem.GetPhysicsSettings().mSpeculativeContactDistance = 0.06
         this._joltPhysSystem.GetPhysicsSettings().mPenetrationSlop = 0.005
 
-        const ground = this.createBox(
-            new THREE.Vector3(7.5, 0.1, 7.5),
-            undefined,
-            new THREE.Vector3(0.0, -0.1, 0.0),
-            undefined
-        )
-        ground.SetFriction(FLOOR_FRICTION)
-        this._joltBodyInterface.AddBody(ground.GetID(), JOLT.EActivation_Activate)
+        
 
         this._bodyAssociations = new Map()
     }
@@ -1642,6 +1634,14 @@ class PhysicsSystem extends WorldSystem {
         }
 
         physSystem.SetContactListener(contactListener)
+    }
+
+    public setGravity(gravity: Jolt.Vec3) {
+        this._joltPhysSystem.SetGravity(gravity)
+    }
+
+    public setBodyMotionType(bodyId: Jolt.BodyID, motionType: Jolt.EMotionType) {
+        this._joltBodyInterface.SetMotionType(bodyId, motionType, JOLT.EActivation_Activate)
     }
 }
 

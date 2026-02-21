@@ -266,17 +266,17 @@ describe("SceneRenderer", () => {
 
     describe("Lighting", () => {
         test("should switch between directional and CSM lighting modes", () => {
-            sceneRenderer.changeLighting(false)
+            sceneRenderer.updateGraphicsSettings()
             const directionalLight = sceneRenderer.scene.children.find(child => child instanceof THREE.DirectionalLight)
             expect(directionalLight).toBeInstanceOf(THREE.DirectionalLight)
 
-            sceneRenderer.changeLighting(true)
+            sceneRenderer.updateGraphicsSettings()
             const noDirectionalLight = sceneRenderer.scene.children.find(
                 child => child instanceof THREE.DirectionalLight
             )
             expect(noDirectionalLight).toBeUndefined()
 
-            sceneRenderer.changeLighting(false)
+            sceneRenderer.updateGraphicsSettings()
             const newDirectionalLight = sceneRenderer.scene.children.find(
                 child => child instanceof THREE.DirectionalLight
             )
@@ -284,7 +284,7 @@ describe("SceneRenderer", () => {
         })
 
         test("should handle null material gracefully", () => {
-            sceneRenderer.changeLighting(true)
+            sceneRenderer.updateGraphicsSettings()
 
             expect(() => sceneRenderer.setupMaterial(null as unknown as THREE.Material)).not.toThrow()
         })
