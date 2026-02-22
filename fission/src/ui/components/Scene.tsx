@@ -37,9 +37,16 @@ const Scene: React.FC<SceneProps> = ({ useStats }) => {
 
             // Bit hacky but works
             class ComponentSceneObject extends SceneObject {
-                public setup(): void {}
+                private _width: number = 0
+                private _height: number = 0
+                public setup(): void { }
                 public update(): void {
                     stats?.update()
+                    if (window.innerWidth != this._width || window.innerHeight != this._height) {
+                        this._width = window.innerWidth
+                        this._height = window.innerHeight
+                        World.sceneRenderer.updateCanvasSize()
+                    }
                 }
                 public dispose(): void {}
             }

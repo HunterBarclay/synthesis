@@ -26,6 +26,7 @@ import { UIProvider } from "./ui/UIProvider.tsx"
 import CommandPalette from "@/ui/components/CommandPalette.tsx"
 import MainEnvironment from "./systems/scene/environments/MainEnvironment.ts"
 import PrototypeEnvironment from "./systems/scene/environments/PrototypeEnvironment.ts"
+import UserCard from "./ui/components/hub/UserCard.tsx"
 
 function Synthesis() {
     const [consentPopupDisable, setConsentPopupDisable] = useState<boolean>(true)
@@ -125,6 +126,11 @@ function Synthesis() {
                             {prototypeUIEnabled ? (<>
                                 <UIRenderer />
                                 <DragModeIndicator />
+                                <UserCard sx={{
+                                    position: 'absolute',
+                                    right: '4pt',
+                                    top: '4pt'
+                                }}/>
                             </>) : (<>
                                 <MultiplayerHUD />
                                 <MainHUD key={"main-hud"} />

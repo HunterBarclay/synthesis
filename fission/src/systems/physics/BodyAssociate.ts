@@ -6,6 +6,7 @@ import type { JoltBodyIndexAndSequence } from "@/systems/physics/PhysicsTypes"
  */
 export class BodyAssociate {
     readonly associatedBody: JoltBodyIndexAndSequence
+    public readonly associateId: string = 'BodyAssociate'
 
     public constructor(bodyId: Jolt.BodyID) {
         this.associatedBody = bodyId.GetIndexAndSequenceNumber()

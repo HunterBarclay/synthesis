@@ -1,6 +1,6 @@
 import * as THREE from "three"
 import { beforeEach, describe, expect, test } from "vitest"
-import { CustomOrbitControls } from "@/systems/scene/CameraControls"
+import { CustomOrbitControls } from "@/systems/scene/camera/CameraControls"
 import ScreenInteractionHandler, { type InteractionType } from "@/systems/scene/ScreenInteractionHandler"
 
 describe("CustomOrbitControls", () => {

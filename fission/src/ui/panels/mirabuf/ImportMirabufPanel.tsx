@@ -44,7 +44,7 @@ import {
 } from "../configuring/assembly-config/ConfigTypes"
 import InitialConfigPanel from "../configuring/initial-config/InitialConfigPanel"
 import CommandRegistry from "@/ui/components/CommandRegistry"
-import type { CustomOrbitControls } from "@/systems/scene/CameraControls"
+import type { CustomOrbitControls } from "@/systems/scene/camera/CameraControls"
 
 // Register commands: Open import panel scoped to robots/fields (module-scope side effect)
 CommandRegistry.get().registerCommands([

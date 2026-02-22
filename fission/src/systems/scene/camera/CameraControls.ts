@@ -1,16 +1,18 @@
 import * as THREE from "three"
 import { MiraType } from "@/mirabuf/MirabufLoader"
-import type MirabufSceneObject from "@/mirabuf/MirabufSceneObject"
+import MirabufSceneObject from "@/mirabuf/MirabufSceneObject"
 import PreferencesSystem from "@/systems/preferences/PreferencesSystem"
-import World from "../World"
-import type ScreenInteractionHandler from "./ScreenInteractionHandler"
+import World from "../../World"
+import type ScreenInteractionHandler from "../ScreenInteractionHandler"
 import {
     type InteractionEnd,
     type InteractionMove,
     type InteractionStart,
     PRIMARY_MOUSE_INTERACTION,
     SECONDARY_MOUSE_INTERACTION,
-} from "./ScreenInteractionHandler"
+} from "../ScreenInteractionHandler"
+import CameraFocusProvider from "./CameraFocusProvider"
+import SceneObject from "../SceneObject"
 
 export type CameraControlsType = "Orbit"
 
@@ -95,7 +97,7 @@ export class CustomOrbitControls extends CameraControls {
     private _coords: SphericalCoords
     private _focus: THREE.Matrix4
 
-    private _focusProvider: MirabufSceneObject | undefined
+    private _focusProvider: CameraFocusProvider | undefined
     private _isExplicitlyUnfocused: boolean = false
     public locked: boolean
 
@@ -108,7 +110,7 @@ export class CustomOrbitControls extends CameraControls {
         return this._enabled
     }
 
-    public set focusProvider(provider: MirabufSceneObject | undefined) {
+    public set focusProvider(provider: CameraFocusProvider | undefined) {
         this._focusProvider = provider
         if (provider !== undefined) {
             this._isExplicitlyUnfocused = false
@@ -170,13 +172,14 @@ export class CustomOrbitControls extends CameraControls {
      * Finds a suitable fallback focus target when the current focus is no longer available.
      * Prioritizes robots first, then fields, then any other MirabufSceneObject.
      */
-    private findFallbackFocus(mirabufObjects?: MirabufSceneObject[]): MirabufSceneObject | undefined {
-        mirabufObjects ??= World.getOwnObjects()
+    private findFallbackFocus(sceneObjects?: SceneObject[]): CameraFocusProvider | undefined {
+        if (!sceneObjects) return undefined
 
-        const robots = mirabufObjects.filter(obj => obj.miraType === MiraType.ROBOT)
-        const fields = mirabufObjects.filter(obj => obj.miraType === MiraType.FIELD)
+        // const robots = mirabufObjects.filter(obj => obj.miraType === MiraType.ROBOT)
+        // const fields = mirabufObjects.filter(obj => obj.miraType === MiraType.FIELD)
 
-        return robots[0] ?? fields[0] ?? mirabufObjects[0]
+        // return robots[0] ?? fields[0] ?? mirabufObjects[0]
+        return undefined
     }
 
     /**
@@ -187,15 +190,19 @@ export class CustomOrbitControls extends CameraControls {
         if (!World.sceneRenderer?.sceneObjects || World.dragModeSystem.isTransitioning) {
             return
         }
-        const mirabufObjects = World.sceneRenderer.mirabufSceneObjects.getAll()
+
+        const sceneObjects = Array.from(World.sceneRenderer.sceneObjects.values())
 
         if (this._focusProvider) {
-            if (!mirabufObjects.includes(this._focusProvider)) {
-                this._focusProvider = this.findFallbackFocus(mirabufObjects)
+            if ((this._focusProvider instanceof SceneObject) && !sceneObjects.includes(this._focusProvider as SceneObject)) {
+                console.debug(`Focus provider:`, this._focusProvider)
+                console.debug(`Scene objects:`, sceneObjects)
+                console.debug(`Focus provider is not in the scene.`)
+                this._focusProvider = this.findFallbackFocus(sceneObjects)
                 this._isExplicitlyUnfocused = false
             }
         } else if (!this._isExplicitlyUnfocused) {
-            this._focusProvider = this.findFallbackFocus(mirabufObjects)
+            this._focusProvider = this.findFallbackFocus(sceneObjects)
         }
     }
 

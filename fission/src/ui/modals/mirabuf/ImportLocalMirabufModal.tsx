@@ -16,7 +16,7 @@ import {
 } from "@/ui/panels/configuring/assembly-config/ConfigTypes"
 import InitialConfigPanel from "@/ui/panels/configuring/initial-config/InitialConfigPanel"
 import ImportMirabufPanel from "@/ui/panels/mirabuf/ImportMirabufPanel"
-import type { CustomOrbitControls } from "@/systems/scene/CameraControls"
+import type { CustomOrbitControls } from "@/systems/scene/camera/CameraControls"
 
 const VisuallyHiddenInput = styled("input")({
     clip: "rect(0 0 0 0)",

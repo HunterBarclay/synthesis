@@ -4,7 +4,7 @@ import * as THREE from "three"
 import { CSM } from "three/examples/jsm/csm/CSM.js"
 import { MiraType } from "@/mirabuf/MirabufLoader"
 import MirabufSceneObject, { type RigidNodeAssociate } from "@/mirabuf/MirabufSceneObject"
-import { type CameraControls, type CameraControlsType, CustomOrbitControls } from "@/systems/scene/CameraControls"
+import { type CameraControls, type CameraControlsType, CustomOrbitControls } from "@/systems/scene/camera/CameraControls"
 import { type ContextData, ContextSupplierEvent } from "@/ui/components/ContextMenuData"
 import { globalOpenPanel } from "@/ui/components/GlobalUIControls"
 import { type PixelSpaceCoord, SceneOverlayEvent, SceneOverlayEventKey } from "@/ui/components/SceneOverlayEvents"
@@ -160,20 +160,22 @@ class SceneRenderer extends WorldSystem {
     }
 
     public updateCanvasSize() {
-        this._renderer.setSize(window.innerWidth, window.innerHeight, true)
+        const width = window.innerWidth
+        const height = window.innerHeight
 
-        const vec = new THREE.Vector2(0, 0)
-        this._renderer.getSize(vec)
-        // No idea why height would be zero, but just incase.
-        this._mainCamera.aspect = window.innerHeight > 0 ? window.innerWidth / window.innerHeight : 1.0
-
+        // Update Camera
+        this._mainCamera.aspect = height > 0 ? width / height : 1.0
         if (this._mainCamera.aspect < STANDARD_ASPECT) {
             this._mainCamera.fov = STANDARD_CAMERA_FOV_Y
         } else {
             this._mainCamera.fov = STANDARD_CAMERA_FOV_X / this._mainCamera.aspect
         }
-
         this._mainCamera.updateProjectionMatrix()
+
+        // Update Renderer
+        this._renderer.setSize(width, height, true)
+        this._composer.setSize(width, height)
+        this._renderer.setPixelRatio(window.devicePixelRatio)
     }
 
     /** Function to disable or enable the antiAliasingPass */

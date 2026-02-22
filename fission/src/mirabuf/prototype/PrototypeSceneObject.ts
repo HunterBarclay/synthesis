@@ -33,6 +33,8 @@ import SceneObject from "@/systems/scene/SceneObject"
 import MirabufInstance from "../MirabufInstance"
 import { MiraType } from "../MirabufLoader"
 import MirabufParser, { ParseErrorSeverity, type RigidNodeId, type RigidNodeReadOnly } from "../MirabufParser"
+import { CustomOrbitControls } from "@/systems/scene/camera/CameraControls"
+import CameraFocusProvider from "@/systems/scene/camera/CameraFocusProvider"
 
 const DEBUG_BODIES = false
 
@@ -41,7 +43,7 @@ interface RnDebugMeshes {
     comMesh: THREE.Mesh
 }
 
-class PrototypeSceneObject extends SceneObject implements ContextSupplier {
+class PrototypeSceneObject extends SceneObject implements ContextSupplier, CameraFocusProvider {
     private readonly _assemblyName: string
     private readonly _mirabufInstance: MirabufInstance
     private readonly _mechanism: Mechanism
@@ -142,7 +144,7 @@ class PrototypeSceneObject extends SceneObject implements ContextSupplier {
                 console.warn("Found a RigidNodeId with no related RigidNode. Skipping for now...")
                 return
             }
-            World.physicsSystem.setBodyAssociation(new RigidNodeAssociate(this, rigidNode, bodyId))
+            World.physicsSystem.setBodyAssociation(new PrototypeRigidNodeAssociate(this, rigidNode, bodyId))
         })
 
         this.updateBatches()
@@ -151,12 +153,17 @@ class PrototypeSceneObject extends SceneObject implements ContextSupplier {
 
         this.moveToSpawnLocation()
 
-        // TODO: Setup camera controls
-        // const cameraControls = World.sceneRenderer.currentCameraControls as CustomOrbitControls
+        console.debug(`WTJGDJGSKJKDS`)
 
-        // if (!cameraControls.focusProvider) {
-        //     cameraControls.focusProvider = this
-        // }
+        // TODO: Setup camera controls
+        const cameraControls = World.sceneRenderer.currentCameraControls as CustomOrbitControls
+
+        if (!cameraControls.focusProvider) {
+            cameraControls.focusProvider = this
+            console.debug(`Focus provider set to: ${this}`)
+        } else {
+            console.debug(`Focus provider already set to: ${cameraControls.focusProvider}`)
+        }
     }
 
     // Centered in xz plane, bottom surface of object
@@ -171,7 +178,7 @@ class PrototypeSceneObject extends SceneObject implements ContextSupplier {
         const pos = new THREE.Vector3();
         this.computeBoundingBox().getCenter(pos)
         console.debug(`Bounding box center: ${pos.x}, ${pos.y}, ${pos.z}`)
-        this.setObjectPosition({ pos: [ -pos.x, -pos.y, -pos.z ], yaw: 0 }, new THREE.Vector3(0, 0, 0));
+        this.setObjectPosition({ pos: [ 0, 0, 0 ], yaw: 0 }, new THREE.Vector3(0, 0, 0));
     }
 
     private setObjectPosition(initialPos: SpawnLocation, referencePosition: THREE.Vector3) {
@@ -504,8 +511,11 @@ class PrototypeSceneObject extends SceneObject implements ContextSupplier {
     }
 
     public loadFocusTransform(mat: THREE.Matrix4) {
-        const bounds = this.computeBoundingBox()
-        const center = bounds.getCenter(new THREE.Vector3())
+        const rootNodeId = this.getRootNodeId()
+        if (!rootNodeId) return
+        const rootBody = World.physicsSystem.getBody(rootNodeId)
+        if (!rootBody) return
+        const center = convertJoltVec3ToThreeVector3(rootBody.GetShape().GetLocalBounds().GetCenter())
         mat.makeTranslation(center.x, center.y, center.z)
     }
 
@@ -515,14 +525,40 @@ class PrototypeSceneObject extends SceneObject implements ContextSupplier {
             items: [],
         }
 
-        data.items.push(
-            {
-                name: "Todo",
-                func: () => {
-                    console.debug("Todo")
-                },
+        if (World.sceneRenderer.currentCameraControls.controlsType == "Orbit") {
+            const cameraControls = World.sceneRenderer.currentCameraControls as CustomOrbitControls
+            if (cameraControls.focusProvider == this) {
+                data.items.push({
+                    name: "Camera: Unfocus",
+                    func: () => {
+                        cameraControls.unfocus()
+                    },
+                })
+
+                if (cameraControls.locked) {
+                    data.items.push({
+                        name: "Camera: Unlock",
+                        func: () => {
+                            cameraControls.locked = false
+                        },
+                    })
+                } else {
+                    data.items.push({
+                        name: "Camera: Lock",
+                        func: () => {
+                            cameraControls.locked = true
+                        },
+                    })
+                }
+            } else {
+                data.items.push({
+                    name: "Camera: Focus",
+                    func: () => {
+                        cameraControls.focusProvider = this
+                    },
+                })
             }
-        )
+        }
 
         data.items.push({
             name: "Remove",
@@ -561,9 +597,10 @@ export async function createPrototype(
 /**
  * Body association to a rigid node with a given mirabuf scene object.
  */
-export class RigidNodeAssociate extends BodyAssociate {
+export class PrototypeRigidNodeAssociate extends BodyAssociate {
     public readonly sceneObject: PrototypeSceneObject
     public robotLastInContactWith: PrototypeSceneObject | null = null
+    public static readonly associateId: string = 'PrototypeSceneObject'
 
     public readonly rigidNode: RigidNodeReadOnly
 

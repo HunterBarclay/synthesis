@@ -8,7 +8,7 @@ import JOLT from "@/util/loading/JoltSyncLoader"
 import { convertJoltVec3ToThreeVector3, convertThreeVector3ToJoltVec3 } from "@/util/TypeConversions"
 import World from "../World"
 import WorldSystem from "../WorldSystem"
-import type { CustomOrbitControls, SphericalCoords } from "./CameraControls"
+import type { CustomOrbitControls, SphericalCoords } from "./camera/CameraControls"
 import {
     type InteractionEnd,
     type InteractionMove,

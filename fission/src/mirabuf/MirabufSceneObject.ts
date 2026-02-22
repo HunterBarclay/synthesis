@@ -25,7 +25,7 @@ import {
     type SpawnLocation,
     type Station,
 } from "@/systems/preferences/PreferenceTypes"
-import type { CustomOrbitControls } from "@/systems/scene/CameraControls"
+import type { CustomOrbitControls } from "@/systems/scene/camera/CameraControls"
 import type GizmoSceneObject from "@/systems/scene/GizmoSceneObject"
 import type Brain from "@/systems/simulation/Brain"
 import type { SimConfigData } from "@/systems/simulation/SimConfigShared"
@@ -57,6 +57,7 @@ import { MiraType } from "./MirabufLoader"
 import MirabufParser, { ParseErrorSeverity, type RigidNodeId, type RigidNodeReadOnly } from "./MirabufParser"
 import ProtectedZoneSceneObject from "./ProtectedZoneSceneObject"
 import ScoringZoneSceneObject from "./ScoringZoneSceneObject"
+import CameraFocusProvider from "@/systems/scene/camera/CameraFocusProvider"
 
 const DEBUG_BODIES = false
 
@@ -82,7 +83,7 @@ export function getSpotlightAssembly(): MirabufSceneObject | undefined {
     return World.sceneRenderer.sceneObjects.get(spotlightAssembly ?? 0) as MirabufSceneObject
 }
 
-class MirabufSceneObject extends SceneObject implements ContextSupplier {
+class MirabufSceneObject extends SceneObject implements ContextSupplier, CameraFocusProvider {
     private readonly _assemblyName: string
     private readonly _mirabufInstance: MirabufInstance
     private readonly _mechanism: Mechanism

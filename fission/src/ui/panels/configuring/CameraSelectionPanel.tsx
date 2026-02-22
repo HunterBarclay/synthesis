@@ -1,7 +1,7 @@
 import type React from "react"
 import { useCallback, useEffect, useState } from "react"
 import buttonPressSound from "@/assets/sound-files/ButtonPress.mp3"
-import type { CameraControlsType, CustomOrbitControls } from "@/systems/scene/CameraControls"
+import type { CameraControlsType, CustomOrbitControls } from "@/systems/scene/camera/CameraControls"
 import { SoundPlayer } from "@/systems/sound/SoundPlayer"
 import World from "@/systems/World"
 import Checkbox from "@/ui/components/Checkbox"
