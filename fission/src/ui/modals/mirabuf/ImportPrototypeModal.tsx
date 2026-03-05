@@ -1,9 +1,7 @@
-import { Box, Stack, styled } from "@mui/material"
-import { type ChangeEvent, useEffect, useState, useCallback } from "react"
+import { Box } from "@mui/material"
+import { useEffect, useCallback } from "react"
 import MirabufCachingService, { MiraType, MirabufCacheInfo } from "@/mirabuf/MirabufLoader"
-import Label from "@/ui/components/Label"
 import type { ModalImplProps } from "@/ui/components/Modal"
-import { Button, ToggleButton, ToggleButtonGroup } from "@/ui/components/StyledComponents"
 import { CloseType, useUIContext } from "@/ui/helpers/UIProviderHelpers"
 import HubMirabufItems from "@/ui/components/hub/HubMirabufItems"
 import { createPrototype } from "@/mirabuf/prototype/PrototypeSceneObject"
@@ -49,7 +47,7 @@ const ImportPrototypeModal: React.FC<ModalImplProps<void, ImportPrototypeModalPr
         )
     }, [modal, configureScreen])
 
-    const selectAPS = useCallback(
+    const downloadAps = useCallback(
         (data: Data) => {
             const status = new ProgressHandle(data.attributes.displayName ?? data.id)
             status.update("Downloading from APS...", 0.05)
@@ -69,13 +67,29 @@ const ImportPrototypeModal: React.FC<ModalImplProps<void, ImportPrototypeModalPr
         [closeModal]
     )
 
+    const spawnAps = useCallback(
+        (data: Data) => {
+            const status = new ProgressHandle(data.attributes.displayName ?? data.id)
+            status.update("Fetching from cache...", 0.05)
+
+            const cacheInfo = MirabufCachingService.getAps(data)
+            if (cacheInfo) {
+                spawnCachedMira(cacheInfo, status)
+            } else {
+                status.fail("Failed to cache")
+            }
+            closeModal(CloseType.Accept)
+        },
+        [closeModal]
+    )
+
     return (
         <Box sx={{
             width: '60vw',
             height: '60vh',
             overflowY: 'auto'
         }}>
-            <HubMirabufItems onDownload={selectAPS} />
+            <HubMirabufItems onDownload={downloadAps} onSpawn={spawnAps} />
         </Box>
     )
 }

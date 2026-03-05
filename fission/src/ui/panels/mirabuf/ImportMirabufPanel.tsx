@@ -147,21 +147,21 @@ export async function spawnCachedMira(info: MirabufCacheInfo, progressHandle?: P
                             cameraControls.focusProvider = mirabufSceneObject
                         }
 
-                        progressHandle.done()
+                        progressHandle!.done()
 
                         if (mirabufSceneObject.miraType == MiraType.ROBOT) {
                             globalOpenPanel(InitialConfigPanel, undefined)
                         }
                     } else {
-                        progressHandle.fail()
+                        progressHandle!.fail()
                     }
                 })
             } else {
-                progressHandle.fail()
+                progressHandle!.fail()
                 console.error("Failed to spawn robot")
             }
         })
-        .catch(() => progressHandle.fail())
+        .catch(() => progressHandle!.fail())
         .finally(() => {
             setTimeout(() => World.physicsSystem.releasePause(PAUSE_REF_ASSEMBLY_SPAWNING), 500)
         })

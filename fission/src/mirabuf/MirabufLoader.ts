@@ -8,9 +8,17 @@ import { hashBuffer } from "@/util/Utility.ts"
 const MIRABUF_LOCALSTORAGE_GENERATION_KEY = "Synthesis Nonce Key"
 const MIRABUF_LOCALSTORAGE_GENERATION = "978534"
 
+export enum APSCacheStatus {
+    Missing = 'missing',
+    Stored = 'available',
+    UpdateAvailable = 'updateAvailable'
+}
+
 export interface MirabufCacheInfo {
+    id: string
     hash: string
     name: string
+    version?: number
     miraType: MiraType
     remotePath?: string
     thumbnailStorageID?: string
@@ -110,6 +118,10 @@ class CacheMap {
 
     public get(hash: string): Readonly<MirabufCacheInfo> | undefined {
         return this._map.get(hash)
+    }
+
+    public find(predicate: ((info: Readonly<MirabufCacheInfo>) => boolean)): Readonly<MirabufCacheInfo> | undefined {
+        return Array.from(this._map.values()).find(predicate)
     }
 
     public add(entry: MirabufCacheInfo): void {
@@ -213,6 +225,7 @@ class MirabufCachingService {
             })
 
             const cached = await MirabufCachingService.storeInCache(miraBuff, {
+                id: name,
                 miraType,
                 name,
                 remotePath: fetchLocation,
@@ -230,6 +243,7 @@ class MirabufCachingService {
 
             // fallback: return raw buffer wrapped in MirabufCacheInfo
             return {
+                id: name,
                 hash: await hashBuffer(miraBuff),
                 miraType: miraType,
                 name: name,
@@ -258,9 +272,20 @@ class MirabufCachingService {
         })
 
         return await MirabufCachingService.storeInCache(miraBuff, {
+            id: data.id,
             miraType,
             name: this.assemblyFromBuffer(miraBuff).info?.name ?? "Unknown APS",
+            version: data.attributes.versionNumber
         })
+    }
+
+    public static aspCacheStatus(data: Data): APSCacheStatus {
+        const info = this._cacheMap.find(x => x.id == data.id)
+        if (!info)
+            return APSCacheStatus.Missing
+
+        return (data.attributes.versionNumber && info.version && info.version < data.attributes.versionNumber)
+            ? APSCacheStatus.UpdateAvailable : APSCacheStatus.Stored;
     }
 
     /**
@@ -293,7 +318,7 @@ class MirabufCachingService {
             return
         }
 
-        const info = await MirabufCachingService.storeAssemblyInCache(assembly, { miraType })
+        const info = await MirabufCachingService.storeAssemblyInCache(assembly, { id: hash, miraType })
         if (!info) return
 
         return { assembly, cacheInfo: info }
@@ -330,6 +355,10 @@ class MirabufCachingService {
             console.error(`Failed to find file\n${e}`)
             return undefined
         }
+    }
+
+    public static getAps(data: Data): MirabufCacheInfo | undefined {
+        return this._cacheMap.find(x => x.id == data.id)
     }
 
     public static async getEncoded(

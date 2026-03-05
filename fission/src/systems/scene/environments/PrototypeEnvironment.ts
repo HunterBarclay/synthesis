@@ -2,8 +2,8 @@ import World from "@/systems/World";
 import SceneEnvironment from "./SceneEnvironment";
 import skyboxVS from "@/shaders/proto_skybox_vs.glsl"
 import skyboxFS from "@/shaders/proto_skybox_fs.glsl"
-import groundVS from "@/shaders/proto_ground_vs.glsl"
-import groundFS from "@/shaders/proto_ground_fs.glsl"
+import groundVS from "@/shaders/box_cross_ground_vs.glsl"
+import groundFS from "@/shaders/box_cross_ground_fs.glsl"
 import * as THREE from "three"
 import { MiraType } from "@/mirabuf/MirabufLoader";
 import MirabufCachingService from "@/mirabuf/MirabufLoader";
@@ -99,14 +99,14 @@ class PrototypeEnvironment extends SceneEnvironment {
         this._ground.castShadow = false
         sceneRenderer.addObject(this._ground)
 
-        // World.physicsSystem.setGravity(new JOLT.Vec3(0, 0, 0));
+        World.physicsSystem.setGravity(new JOLT.Vec3(0, 0, 0));
 
-        MirabufCachingService.cacheRemote(
-            "/api/mira/robots/Team 2471 (2018)_v7.mira",
-            MiraType.ROBOT
-        ).then(x => MirabufCachingService.get(x!.hash))
-        .then(assembly => assembly && createPrototype(assembly))
-        .then(prototypeSceneObject => prototypeSceneObject && World.sceneRenderer.registerSceneObject(prototypeSceneObject))
+        // MirabufCachingService.cacheRemote(
+        //     "/api/mira/robots/Team 2471 (2018)_v7.mira",
+        //     MiraType.ROBOT
+        // ).then(x => MirabufCachingService.get(x!.hash))
+        // .then(assembly => assembly && createPrototype(assembly))
+        // .then(prototypeSceneObject => prototypeSceneObject && World.sceneRenderer.registerSceneObject(prototypeSceneObject))
 
         World.dragModeSystem.enabled = true;
 

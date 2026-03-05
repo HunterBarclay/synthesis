@@ -36,7 +36,7 @@ import MirabufParser, { ParseErrorSeverity, type RigidNodeId, type RigidNodeRead
 import { CustomOrbitControls } from "@/systems/scene/camera/CameraControls"
 import CameraFocusProvider from "@/systems/scene/camera/CameraFocusProvider"
 
-const DEBUG_BODIES = false
+const DEBUG_BODIES = true
 
 interface RnDebugMeshes {
     colliderMesh: THREE.Mesh

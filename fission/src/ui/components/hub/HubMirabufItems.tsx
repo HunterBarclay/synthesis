@@ -6,12 +6,20 @@ import { MdExpandMore } from "react-icons/md";
 import Label from "../Label";
 import { Accordion, AccordionDetails, AccordionSummary, RefreshButton, SynthesisIcons } from "../StyledComponents";
 import HubItem from "./HubItem";
+import MirabufCachingService from "@/mirabuf/MirabufLoader";
 
 interface HubMirabufItemsProps {
     onDownload: (data: Data) => void
+    onSpawn: (data: Data) => void
 }
 
-const HubMirabufItems: React.FC<HubMirabufItemsProps> = ({ onDownload }) => {
+const deleteInfo = (data: Data) => {
+    const info = MirabufCachingService.getAps(data);
+    if (info)
+        MirabufCachingService.remove(info.hash);
+}
+
+const HubMirabufItems: React.FC<HubMirabufItemsProps> = ({ onDownload, onSpawn }) => {
 
     const [filesStatus, setFilesStatus] = useState<TaskStatus>({
         isDone: false,
@@ -81,8 +89,9 @@ const HubMirabufItems: React.FC<HubMirabufItemsProps> = ({ onDownload }) => {
                         <HubItem
                             key={x.id}
                             file={x}
-                            primaryButtonNode={SynthesisIcons.DOWNLOAD_LARGE}
-                            primaryOnClick={onDownload}
+                            onDownload={onDownload}
+                            onSpawn={onSpawn}
+                            onDelete={(data) => deleteInfo(data)}
                         />
                     ))
                 ) : filesStatus.isDone ? (
