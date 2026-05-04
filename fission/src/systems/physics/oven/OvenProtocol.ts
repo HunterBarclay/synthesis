@@ -1,11 +1,7 @@
 export enum OvenMessageType {
     Init = "init",
     Configure = "configure",
-    AddBody = "addBody",
-    MoveBody = "moveBody",
-    RemoveBody = "removeBody",
-    AddJoint = "addJoint",
-    RemoveJoint = "removeJoint",
+    LoadTray = "loadTray",
     Simulate = "simulate",
     SaveState = "saveState",
     ResetState = "resetState",
@@ -18,10 +14,63 @@ export enum OvenMessageType {
     Error = "error",
     BodyStates = "bodyStates",
     RecordingData = "recordingData",
+    SimulationProgress = "simulationProgress",
 }
 
 export type Vec3Tuple = [number, number, number]
 export type QuatTuple = [number, number, number, number]
+
+export type OvenJointType = "fixed" | "hinge" | "slider"
+
+export interface OvenTrayBody {
+    bodyId: string
+    halfExtents: Vec3Tuple
+    position: Vec3Tuple
+    rotation: QuatTuple
+    mass?: number
+    fixed?: boolean
+    friction?: number
+    restitution?: number
+}
+
+export interface OvenTrayJoint {
+    jointId: string
+    bodyIdA: string
+    bodyIdB: string
+    jointType: OvenJointType
+    anchor: Vec3Tuple
+    axis?: Vec3Tuple
+    limitsMin?: number
+    limitsMax?: number
+}
+
+export type OvenMotorMode = "velocity" | "position"
+
+export interface OvenJointMotor {
+    jointGuid: string
+    mode: OvenMotorMode
+    targetValue: number
+    maxForce?: number
+    maxTorque?: number
+}
+
+export interface OvenNodeOverride {
+    fixed?: boolean
+}
+
+export interface OvenTrayAssembly {
+    assemblyData: Uint8Array
+    motors?: OvenJointMotor[]
+    nodeOverrides?: Record<string, OvenNodeOverride>
+    position?: Vec3Tuple
+    rotation?: QuatTuple
+}
+
+export interface OvenTray {
+    bodies: OvenTrayBody[]
+    joints: OvenTrayJoint[]
+    assemblies?: OvenTrayAssembly[]
+}
 
 export interface IOvenMessage {
     messageType: OvenMessageType
@@ -37,51 +86,12 @@ export interface OvenConfigureMessage extends IOvenMessage {
     gravity?: Vec3Tuple
     timestep?: number
     substeps?: number
+    progressInterval?: number
 }
 
-export interface OvenAddBodyMessage extends IOvenMessage {
-    messageType: OvenMessageType.AddBody
-    bodyId: string
-    halfExtents: Vec3Tuple
-    position: Vec3Tuple
-    rotation: QuatTuple
-    mass?: number
-    fixed?: boolean
-    friction?: number
-    restitution?: number
-}
-
-export interface OvenMoveBodyMessage extends IOvenMessage {
-    messageType: OvenMessageType.MoveBody
-    bodyId: string
-    position?: Vec3Tuple
-    rotation?: QuatTuple
-    linearVelocity?: Vec3Tuple
-    angularVelocity?: Vec3Tuple
-}
-
-export interface OvenRemoveBodyMessage extends IOvenMessage {
-    messageType: OvenMessageType.RemoveBody
-    bodyId: string
-}
-
-export type OvenJointType = "fixed" | "hinge" | "slider"
-
-export interface OvenAddJointMessage extends IOvenMessage {
-    messageType: OvenMessageType.AddJoint
-    jointId: string
-    bodyIdA: string
-    bodyIdB: string
-    jointType: OvenJointType
-    anchor: Vec3Tuple
-    axis?: Vec3Tuple
-    limitsMin?: number
-    limitsMax?: number
-}
-
-export interface OvenRemoveJointMessage extends IOvenMessage {
-    messageType: OvenMessageType.RemoveJoint
-    jointId: string
+export interface OvenLoadTrayMessage extends IOvenMessage {
+    messageType: OvenMessageType.LoadTray
+    tray: OvenTray
 }
 
 export interface OvenSimulateMessage extends IOvenMessage {
@@ -112,11 +122,7 @@ export interface OvenSetupRecorderMessage extends IOvenMessage {
 export type OvenRequest =
     | OvenInitMessage
     | OvenConfigureMessage
-    | OvenAddBodyMessage
-    | OvenMoveBodyMessage
-    | OvenRemoveBodyMessage
-    | OvenAddJointMessage
-    | OvenRemoveJointMessage
+    | OvenLoadTrayMessage
     | OvenSimulateMessage
     | OvenSaveStateMessage
     | OvenResetStateMessage
@@ -167,6 +173,12 @@ export interface OvenRecordingDataResponse extends IOvenMessage {
     lastStep: number
 }
 
+export interface OvenSimulationProgressResponse extends IOvenMessage {
+    messageType: OvenMessageType.SimulationProgress
+    completedSteps: number
+    totalSteps: number
+}
+
 export interface OvenErrorResponse extends IOvenMessage {
     messageType: OvenMessageType.Error
     error: string
@@ -178,4 +190,5 @@ export type OvenResponse =
     | OvenResultResponse
     | OvenBodyStatesResponse
     | OvenRecordingDataResponse
+    | OvenSimulationProgressResponse
     | OvenErrorResponse

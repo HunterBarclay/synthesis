@@ -3,11 +3,7 @@ import {
     type OvenRequest,
     type OvenResponse,
     type OvenConfigureMessage,
-    type OvenAddBodyMessage,
-    type OvenMoveBodyMessage,
-    type OvenRemoveBodyMessage,
-    type OvenAddJointMessage,
-    type OvenRemoveJointMessage,
+    type OvenLoadTrayMessage,
     type OvenSimulateMessage,
     type OvenSaveStateMessage,
     type OvenResetStateMessage,
@@ -47,6 +43,13 @@ function handleMessage(data: OvenRequest): void {
                         lastStep,
                     })
                 })
+                ovenSystem.setProgressCallback((completedSteps, totalSteps) => {
+                    respond({
+                        messageType: OvenMessageType.SimulationProgress,
+                        completedSteps,
+                        totalSteps,
+                    })
+                })
                 respond({ messageType: OvenMessageType.Ready, requestId })
                 return
             }
@@ -54,71 +57,15 @@ function handleMessage(data: OvenRequest): void {
             case OvenMessageType.Configure: {
                 requireSystem()
                 const msg = data as OvenConfigureMessage
-                ovenSystem!.configure(msg.gravity, msg.timestep, msg.substeps)
+                ovenSystem!.configure(msg.gravity, msg.timestep, msg.substeps, msg.progressInterval)
                 success(requestId)
                 return
             }
 
-            case OvenMessageType.AddBody: {
+            case OvenMessageType.LoadTray: {
                 requireSystem()
-                const msg = data as OvenAddBodyMessage
-                ovenSystem!.addBody(
-                    msg.bodyId,
-                    msg.halfExtents,
-                    msg.position,
-                    msg.rotation,
-                    msg.mass,
-                    msg.fixed,
-                    msg.friction,
-                    msg.restitution,
-                )
-                success(requestId)
-                return
-            }
-
-            case OvenMessageType.MoveBody: {
-                requireSystem()
-                const msg = data as OvenMoveBodyMessage
-                ovenSystem!.moveBody(
-                    msg.bodyId,
-                    msg.position,
-                    msg.rotation,
-                    msg.linearVelocity,
-                    msg.angularVelocity,
-                )
-                success(requestId)
-                return
-            }
-
-            case OvenMessageType.RemoveBody: {
-                requireSystem()
-                const msg = data as OvenRemoveBodyMessage
-                ovenSystem!.removeBody(msg.bodyId)
-                success(requestId)
-                return
-            }
-
-            case OvenMessageType.AddJoint: {
-                requireSystem()
-                const msg = data as OvenAddJointMessage
-                ovenSystem!.addJoint(
-                    msg.jointId,
-                    msg.bodyIdA,
-                    msg.bodyIdB,
-                    msg.jointType,
-                    msg.anchor,
-                    msg.axis,
-                    msg.limitsMin,
-                    msg.limitsMax,
-                )
-                success(requestId)
-                return
-            }
-
-            case OvenMessageType.RemoveJoint: {
-                requireSystem()
-                const msg = data as OvenRemoveJointMessage
-                ovenSystem!.removeJoint(msg.jointId)
+                const msg = data as OvenLoadTrayMessage
+                ovenSystem!.loadTray(msg.tray)
                 success(requestId)
                 return
             }

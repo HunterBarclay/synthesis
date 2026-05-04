@@ -1,13 +1,19 @@
-import { Stack, CircularProgress, Slider, Typography } from "@mui/material"
+import { Stack, LinearProgress, Slider, Typography } from "@mui/material"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Button } from "./StyledComponents"
 import { IoPlayOutline, IoPauseOutline } from "react-icons/io5"
 import { BiReset } from "react-icons/bi"
+import { IoMdAdd } from "react-icons/io"
+import { useUIContext } from "@/ui/helpers/UIProviderHelpers"
+import ImportPrototypeModal from "@/ui/modals/mirabuf/ImportPrototypeModal"
 
 const RECORDER_FRAMERATE = 60
 
 const OvenActionBar: React.FC = () => {
+    const { openModal } = useUIContext()
+
     const [simulating, setSimulating] = useState(false)
+    const [progress, setProgress] = useState(0)
     const [totalFrames, setTotalFrames] = useState(0)
     const [scrubValue, setScrubValue] = useState(0)
     const [playing, setPlaying] = useState(false)
@@ -26,14 +32,19 @@ const OvenActionBar: React.FC = () => {
             const detail = (e as CustomEvent).detail
             if (detail?.action === "simulateDone") {
                 setSimulating(false)
+                setProgress(0)
                 const frames = detail.totalFrames as number
                 if (frames > 0) {
                     setTotalFrames(frames)
                     setScrubValue(100)
                     scrubRef.current = 100
                 }
+            } else if (detail?.action === "progress") {
+                const pct = ((detail.completedSteps as number) / (detail.totalSteps as number)) * 100
+                setProgress(pct)
             } else if (detail?.action === "error") {
                 setSimulating(false)
+                setProgress(0)
             }
         }
         window.addEventListener("ovenResult", onResult)
@@ -124,6 +135,7 @@ const OvenActionBar: React.FC = () => {
     }
 
     const handleScrub = useCallback((_: Event, value: number | number[]) => {
+        console.debug(value)
         const v = typeof value === "number" ? value : value[0]
         stopPlayback()
         setScrubValue(v)
@@ -147,10 +159,22 @@ const OvenActionBar: React.FC = () => {
             sx={{
                 bgcolor: "background.paper",
                 boxShadow: 8,
-                minWidth: hasRecording ? 480 : undefined,
+                minWidth: (hasRecording || simulating) ? 480 : undefined,
             }}
         >
-            {hasRecording && (
+            {simulating && (
+                <Stack direction="column" gap={0.5} className="w-full px-2">
+                    <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                        Baking… {Math.round(progress)}%
+                    </Typography>
+                    <LinearProgress
+                        variant="determinate"
+                        value={progress}
+                        sx={{ width: "100%", borderRadius: 1 }}
+                    />
+                </Stack>
+            )}
+            {hasRecording && !simulating && (
                 <Stack direction="row" alignItems="center" gap={2} className="w-full px-2">
                     <Typography variant="caption" sx={{ color: "text.secondary", whiteSpace: "nowrap" }}>
                         Frame {Math.round(scrubValue / 100 * (totalFrames - 1))}/{totalFrames - 1}
@@ -167,7 +191,15 @@ const OvenActionBar: React.FC = () => {
                 </Stack>
             )}
             <Stack direction="row" gap={1.5}>
-                {hasRecording ? (
+                <Button
+                    variant="outlined"
+                    disabled={simulating || hasRecording}
+                    onClick={() => openModal(ImportPrototypeModal, {})}
+                    startIcon={<IoMdAdd />}
+                >
+                    Add Assembly
+                </Button>
+                {hasRecording && !simulating ? (
                     <Button
                         variant="contained"
                         color="success"
@@ -182,9 +214,9 @@ const OvenActionBar: React.FC = () => {
                         color="success"
                         disabled={simulating}
                         onClick={handleSimulate}
-                        startIcon={simulating ? <CircularProgress size={16} color="inherit" /> : <IoPlayOutline />}
+                        startIcon={<IoPlayOutline />}
                     >
-                        {simulating ? "Simulating…" : "Simulate 10s"}
+                        {simulating ? "Baking…" : "Simulate 10s"}
                     </Button>
                 )}
                 <Button

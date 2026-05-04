@@ -5,30 +5,17 @@ import skyboxFS from "@/shaders/proto_skybox_fs.glsl"
 import groundVS from "@/shaders/box_cross_ground_vs.glsl"
 import groundFS from "@/shaders/box_cross_ground_fs.glsl"
 import * as THREE from "three"
-import { MiraType } from "@/mirabuf/MirabufLoader";
-import MirabufCachingService from "@/mirabuf/MirabufLoader";
-import { createPrototype } from "@/mirabuf/prototype/PrototypeSceneObject";
+import { TransformControls } from "three/examples/jsm/controls/TransformControls.js"
 import { ContextData } from "@/ui/components/ContextMenuData";
 import JOLT from "@/util/loading/JoltSyncLoader"
 import PreferencesSystem from "@/systems/preferences/PreferencesSystem";
 import { CustomOrbitControls } from "../camera/CameraControls";
 import ImportPrototypeModal from "@/ui/modals/mirabuf/ImportPrototypeModal";
-import OvenWorker from "@/systems/physics/oven/OvenWorker?worker"
-import { OvenMessageType, type OvenBodyKeyframe, type OvenBodyState, type OvenRecordingBody, type OvenRequest, type OvenResponse } from "@/systems/physics/oven/OvenProtocol"
-
-interface OvenBoxDef {
-    bodyId: string
-    halfExtents: [number, number, number]
-    position: [number, number, number]
-    color: number
-    mass: number
-    fixed?: boolean
-}
-
-const OVEN_BOXES: OvenBoxDef[] = [
-    { bodyId: "boxA", halfExtents: [0.5, 0.5, 0.5], position: [0.0, 0.0, 0.0], color: 0x4488ff, mass: 1.0, fixed: true },
-    { bodyId: "boxB", halfExtents: [1.0, 0.5, 0.5], position: [1.5, 1.0, 0.0], color: 0xff6644, mass: 1.0 },
-]
+import OvenHandler from "@/systems/physics/oven/OvenHandler"
+import type { OvenTray, OvenTrayAssembly, OvenJointMotor, OvenBodyKeyframe, Vec3Tuple, QuatTuple } from "@/systems/physics/oven/OvenProtocol"
+import type { OvenRecordingChunk } from "@/systems/physics/oven/OvenHandler"
+import MirabufParser from "@/mirabuf/MirabufParser"
+import OvenMirabufInstance from "@/mirabuf/OvenMirabufInstance"
 
 const OVEN_TIMESTEP = 1.0 / 240.0
 const SIMULATE_SECONDS = 10
@@ -36,6 +23,7 @@ const SIMULATE_STEPS = Math.round(SIMULATE_SECONDS / OVEN_TIMESTEP)
 
 const RECORDER_FRAMERATE = 60
 const RECORDER_MAX_FRAME_BUFFER = 300
+const PROGRESS_INTERVAL = Math.round(SIMULATE_STEPS / 20)
 
 class PrototypeEnvironment extends SceneEnvironment {
 
@@ -43,13 +31,24 @@ class PrototypeEnvironment extends SceneEnvironment {
     private _ambientLight: THREE.AmbientLight | undefined
     private _skybox: THREE.Mesh | undefined
     private _ground: THREE.Mesh | undefined
-    private _ovenWorker: Worker | undefined
 
-    private _boxMeshes: Map<string, THREE.Mesh> = new Map()
+    private _oven: OvenHandler | undefined
     private _ovenActionHandler: ((e: Event) => void) | undefined
-    private _recordingChunks: { bodies: OvenRecordingBody[], firstStep: number, lastStep: number }[] = []
+    private _recordingChunks: OvenRecordingChunk[] = []
     private _flatRecording: Map<string, OvenBodyKeyframe[]> = new Map()
     private _totalRecordedFrames: number = 0
+
+    private _tray: OvenTray = { bodies: [], joints: [] }
+    private _assemblyVisuals: OvenMirabufInstance[] = []
+    private _assemblyNames: string[] = []
+
+    private _editingLocked: boolean = false
+    private _simulationPending: boolean = false
+
+    private _activeGizmo: TransformControls | undefined
+    private _activeGizmoIndex: number = -1
+    private _gizmoDragListener: (() => void) | undefined
+    private _gizmoDraggingListener: ((e: { value: unknown }) => void) | undefined
 
     public createEnvironment(): void {
         const sceneRenderer = World.sceneRenderer;
@@ -83,7 +82,6 @@ class PrototypeEnvironment extends SceneEnvironment {
         pointLight3.position.set(-1, 3, -2)
         sceneRenderer.addObject(pointLight3)
 
-        // Adding spherical skybox mesh
         const skyboxGeometry = new THREE.SphereGeometry(250)
         const skyboxMaterial = new THREE.ShaderMaterial({
             vertexShader: skyboxVS,
@@ -103,7 +101,6 @@ class PrototypeEnvironment extends SceneEnvironment {
 
         const dotColor: THREE.Color = new THREE.Color(0x3d5273);
 
-        // Adding ground mesh
         const groundGeometry = new THREE.PlaneGeometry(100, 100)
         const groundMaterial = new THREE.ShaderMaterial({
             vertexShader: groundVS,
@@ -131,141 +128,385 @@ class PrototypeEnvironment extends SceneEnvironment {
 
         World.physicsSystem.setGravity(new JOLT.Vec3(0, 0, 0));
 
-        // MirabufCachingService.cacheRemote(
-        //     "/api/mira/robots/Team 2471 (2018)_v7.mira",
-        //     MiraType.ROBOT
-        // ).then(x => MirabufCachingService.get(x!.hash))
-        // .then(assembly => assembly && createPrototype(assembly))
-        // .then(prototypeSceneObject => prototypeSceneObject && World.sceneRenderer.registerSceneObject(prototypeSceneObject))
-
         World.dragModeSystem.enabled = true;
 
         PreferencesSystem.setGlobalPreference('ShowViewCube', false);
 
-        this._ovenWorker = new OvenWorker()
-        this._ovenWorker.addEventListener("message", (e: MessageEvent<OvenResponse>) => {
-            this.handleOvenResponse(e.data)
-        })
-        this._ovenWorker.addEventListener("error", (e: ErrorEvent) => {
-            console.error("[Oven] Worker error:", e.message, e)
-        })
+        this._oven = new OvenHandler()
+        this._oven.onReady = () => {
+            this._oven!.configure({ progressInterval: PROGRESS_INTERVAL })
+            console.log("[Oven] Ready — waiting for simulate action to load tray")
+        }
+        this._oven.onError = (err) => {
+            console.error(`[Oven] ${err}`)
+            window.dispatchEvent(new CustomEvent("ovenResult", { detail: { action: "error" } }))
+        }
+        this._oven.onBodyStates = (bodies) => {
+            for (const visual of this._assemblyVisuals) {
+                visual.applyBodyStates(bodies)
+            }
+
+            if (this._simulationPending) {
+                this._simulationPending = false
+                this.flattenRecording()
+                this._editingLocked = true
+                window.dispatchEvent(new CustomEvent("ovenResult", {
+                    detail: { action: "simulateDone", totalFrames: this._totalRecordedFrames },
+                }))
+                this.broadcastEditingState()
+            }
+        }
+        this._oven.onRecordingData = (chunk) => {
+            this._recordingChunks.push(chunk)
+            console.log(`[Oven] Recording chunk: steps ${chunk.firstStep}–${chunk.lastStep} (${chunk.bodies[0]?.keyframes.length ?? 0} frames)`)
+        }
+        this._oven.onProgress = (completedSteps, totalSteps) => {
+            window.dispatchEvent(new CustomEvent("ovenResult", {
+                detail: { action: "progress", completedSteps, totalSteps },
+            }))
+        }
+        this._oven.init()
 
         this._ovenActionHandler = (e: Event) => {
             const detail = (e as CustomEvent).detail
             if (detail?.action === "simulate") {
+                this.disableGizmo()
+                this.syncTrayTransforms()
                 this._recordingChunks = []
                 this._flatRecording.clear()
                 this._totalRecordedFrames = 0
-                this.sendOven({ messageType: OvenMessageType.SaveState })
-                this.sendOven({ messageType: OvenMessageType.Simulate, steps: SIMULATE_STEPS })
-                this.sendOven({ messageType: OvenMessageType.GetBodyStates })
+                this._editingLocked = true
+                this._simulationPending = true
+                this.broadcastEditingState()
+                this.loadTrayAndSimulate()
             } else if (detail?.action === "reset") {
                 this._recordingChunks = []
                 this._flatRecording.clear()
                 this._totalRecordedFrames = 0
-                this.sendOven({ messageType: OvenMessageType.ResetState })
-                this.sendOven({ messageType: OvenMessageType.GetBodyStates })
+                this._editingLocked = false
+                this._oven!.resetState()
+                this._oven!.getBodyStates()
+                this.restoreVisualTransforms()
+                this.broadcastEditingState()
             } else if (detail?.action === "scrub") {
-                this.scrubToNormalized(detail.t as number)
+                for (const visual of this._assemblyVisuals) {
+                    visual.scrubToNormalized(
+                        detail.t as number,
+                        this._flatRecording,
+                        this._totalRecordedFrames,
+                    )
+                }
+            } else if (detail?.action === "addAssembly") {
+                if (this._editingLocked) {
+                    console.warn("[Oven] Cannot add assembly while editing is locked (reset first)")
+                    return
+                }
+                const assemblyData = detail.assemblyData as Uint8Array
+                const assembly = detail.assembly as { info?: { name?: string } }
+                const parser = new MirabufParser(detail.assembly)
+                const name = assembly.info?.name ?? "Unnamed Assembly"
+                const existingCount = this._assemblyVisuals.length
+                const offset: Vec3Tuple = [existingCount * 1.5, 0, 0]
+                const index = this.addAssembly(assemblyData, parser, name, offset)
+                console.log(`[Oven] Added assembly ${index}: ${name}`)
+            } else if (detail?.action === "removeAssembly") {
+                if (this._editingLocked) return
+                this.removeAssembly(detail.assemblyIndex as number)
+            } else if (detail?.action === "removeMotor") {
+                if (this._editingLocked) return
+                this.removeMotor(detail.assemblyIndex as number, detail.jointGuid as string)
+            } else if (detail?.action === "setNodeFixed") {
+                if (this._editingLocked) return
+                this.setNodeFixed(detail.assemblyIndex as number, detail.nodeId as string, detail.fixed as boolean)
+            } else if (detail?.action === "gizmoTransformUpdate") {
+                if (this._editingLocked) return
+                const idx = detail.assemblyIndex as number
+                const pos = detail.position as Vec3Tuple
+                const rot = detail.rotation as QuatTuple
+                this.updateAssemblyTransform(idx, pos, rot)
+            } else if (detail?.action === "enableGizmo") {
+                if (this._editingLocked) return
+                this.enableGizmo(detail.assemblyIndex as number, (detail.mode as "translate" | "rotate") ?? "translate")
+            } else if (detail?.action === "setGizmoMode") {
+                if (this._activeGizmo) {
+                    this._activeGizmo.setMode(detail.mode as "translate" | "rotate")
+                }
+            } else if (detail?.action === "disableGizmo") {
+                this.disableGizmo()
             }
         }
         window.addEventListener("ovenAction", this._ovenActionHandler)
-
     }
 
-    private sendOven(msg: OvenRequest): void {
-        this._ovenWorker?.postMessage(msg)
+    public addAssembly(assemblyData: Uint8Array, parser: MirabufParser, name = "Unnamed Assembly", initialPosition?: Vec3Tuple): number {
+        if (!this._tray.assemblies) {
+            this._tray.assemblies = []
+        }
+
+        const entry: OvenTrayAssembly = { assemblyData }
+        if (initialPosition) {
+            entry.position = initialPosition
+        }
+        this._tray.assemblies.push(entry)
+
+        const assemblyIndex = this._tray.assemblies.length - 1
+        const visual = new OvenMirabufInstance(parser, assemblyIndex)
+        if (initialPosition) {
+            visual.setTransform(initialPosition, [0, 0, 0, 1])
+        }
+        visual.addToScene(World.sceneRenderer.scene)
+        this._assemblyVisuals.push(visual)
+        this._assemblyNames.push(name)
+
+        this.broadcastTrayState()
+
+        return assemblyIndex
     }
 
-    private handleOvenResponse(msg: OvenResponse): void {
-        switch (msg.messageType) {
-            case OvenMessageType.Loaded:
-                this.sendOven({ messageType: OvenMessageType.Init })
-                break
-            case OvenMessageType.Ready:
-                this.setupOvenScene()
-                break
-            case OvenMessageType.Result:
-                if (!msg.success) {
-                    console.error(`[Oven] Error: ${msg.error}`)
-                    window.dispatchEvent(new CustomEvent("ovenResult", { detail: { action: "error" } }))
-                }
-                break
-            case OvenMessageType.BodyStates:
-                this.applyBodyStates(msg.bodies)
-                this.flattenRecording()
-                window.dispatchEvent(new CustomEvent("ovenResult", {
-                    detail: { action: "simulateDone", totalFrames: this._totalRecordedFrames },
+    public removeAssembly(index: number): void {
+        if (!this._tray.assemblies || index < 0 || index >= this._tray.assemblies.length) {
+            console.warn(`[Oven] Invalid assembly index: ${index}`)
+            return
+        }
+
+        this._tray.assemblies.splice(index, 1)
+        this._assemblyNames.splice(index, 1)
+
+        const visual = this._assemblyVisuals.splice(index, 1)[0]
+        if (visual) {
+            visual.removeFromScene(World.sceneRenderer.scene)
+        }
+
+        for (let i = index; i < this._assemblyVisuals.length; i++) {
+            this._assemblyVisuals[i].assemblyIndex = i
+        }
+
+        this.broadcastTrayState()
+    }
+
+    public setMotor(assemblyIndex: number, motor: OvenJointMotor): void {
+        if (!this._tray.assemblies || assemblyIndex < 0 || assemblyIndex >= this._tray.assemblies.length) {
+            console.warn(`[Oven] Invalid assembly index: ${assemblyIndex}`)
+            return
+        }
+
+        const asm = this._tray.assemblies[assemblyIndex]
+        if (!asm.motors) {
+            asm.motors = []
+        }
+
+        const existing = asm.motors.findIndex(m => m.jointGuid === motor.jointGuid)
+        if (existing >= 0) {
+            asm.motors[existing] = motor
+        } else {
+            asm.motors.push(motor)
+        }
+
+        this.broadcastTrayState()
+    }
+
+    public removeMotor(assemblyIndex: number, jointGuid: string): void {
+        if (!this._tray.assemblies || assemblyIndex < 0 || assemblyIndex >= this._tray.assemblies.length) {
+            console.warn(`[Oven] Invalid assembly index: ${assemblyIndex}`)
+            return
+        }
+
+        const asm = this._tray.assemblies[assemblyIndex]
+        if (!asm.motors) return
+
+        const idx = asm.motors.findIndex(m => m.jointGuid === jointGuid)
+        if (idx >= 0) {
+            asm.motors.splice(idx, 1)
+        }
+
+        this.broadcastTrayState()
+    }
+
+    public setNodeFixed(assemblyIndex: number, nodeId: string, fixed: boolean): void {
+        if (!this._tray.assemblies || assemblyIndex < 0 || assemblyIndex >= this._tray.assemblies.length) {
+            console.warn(`[Oven] Invalid assembly index: ${assemblyIndex}`)
+            return
+        }
+
+        const asm = this._tray.assemblies[assemblyIndex]
+        if (!asm.nodeOverrides) {
+            asm.nodeOverrides = {}
+        }
+
+        if (!asm.nodeOverrides[nodeId]) {
+            asm.nodeOverrides[nodeId] = {}
+        }
+        asm.nodeOverrides[nodeId].fixed = fixed
+
+        this.broadcastTrayState()
+    }
+
+    private updateAssemblyTransform(index: number, position: Vec3Tuple, rotation: QuatTuple): void {
+        if (!this._tray.assemblies || index < 0 || index >= this._tray.assemblies.length) return
+
+        this._tray.assemblies[index].position = position
+        this._tray.assemblies[index].rotation = rotation
+
+        const visual = this._assemblyVisuals[index]
+        if (visual) {
+            visual.setTransform(position, rotation)
+        }
+    }
+
+    private enableGizmo(assemblyIndex: number, mode: "translate" | "rotate"): void {
+        this.disableGizmo()
+
+        const visual = this._assemblyVisuals[assemblyIndex]
+        if (!visual) return
+
+        const renderer = World.sceneRenderer
+        const gizmo = new TransformControls(renderer.mainCamera, renderer.renderer.domElement)
+        gizmo.setMode(mode)
+        gizmo.setSpace("local")
+        gizmo.attach(visual.rootObject)
+
+        renderer.scene.add(gizmo.getHelper())
+
+        this._gizmoDragListener = () => {
+            const p = visual.rootObject.position
+            const q = visual.rootObject.quaternion
+            const pos: Vec3Tuple = [p.x, p.y, p.z]
+            const rot: QuatTuple = [q.x, q.y, q.z, q.w]
+
+            if (this._tray.assemblies && assemblyIndex < this._tray.assemblies.length) {
+                this._tray.assemblies[assemblyIndex].position = pos
+                this._tray.assemblies[assemblyIndex].rotation = rot
+            }
+            visual.setTransform(pos, rot)
+        }
+        gizmo.addEventListener("change", this._gizmoDragListener)
+
+        this._gizmoDraggingListener = (event: { value: unknown }) => {
+            renderer.currentCameraControls.enabled = !event.value
+        }
+        gizmo.addEventListener("dragging-changed", this._gizmoDraggingListener)
+
+        this._activeGizmo = gizmo
+        this._activeGizmoIndex = assemblyIndex
+
+        window.dispatchEvent(new CustomEvent("ovenResult", {
+            detail: { action: "gizmoState", active: true, assemblyIndex, mode },
+        }))
+    }
+
+    private disableGizmo(): void {
+        if (!this._activeGizmo) return
+
+        const renderer = World.sceneRenderer
+
+        this._activeGizmo.detach()
+        renderer.scene.remove(this._activeGizmo.getHelper())
+
+        if (this._gizmoDragListener) {
+            this._activeGizmo.removeEventListener("change", this._gizmoDragListener)
+            this._gizmoDragListener = undefined
+        }
+        if (this._gizmoDraggingListener) {
+            this._activeGizmo.removeEventListener("dragging-changed", this._gizmoDraggingListener as any)
+            this._gizmoDraggingListener = undefined
+        }
+
+        this._activeGizmo.dispose()
+        this._activeGizmo = undefined
+
+        renderer.currentCameraControls.enabled = true
+
+        const prevIndex = this._activeGizmoIndex
+        this._activeGizmoIndex = -1
+
+        window.dispatchEvent(new CustomEvent("ovenResult", {
+            detail: { action: "gizmoState", active: false, assemblyIndex: prevIndex },
+        }))
+    }
+
+    /**
+     * Before starting a simulation, pull the latest transforms from each
+     * visual's rootObject and write them onto the tray assemblies.
+     */
+    private syncTrayTransforms(): void {
+        if (!this._tray.assemblies) return
+
+        for (let i = 0; i < this._tray.assemblies.length; i++) {
+            const visual = this._assemblyVisuals[i]
+            if (!visual) continue
+
+            this._tray.assemblies[i].position = visual.getPosition()
+            this._tray.assemblies[i].rotation = visual.getRotation()
+        }
+    }
+
+    /**
+     * After a reset, restore each visual to its pre-simulation transform
+     * stored on the tray.
+     */
+    private restoreVisualTransforms(): void {
+        if (!this._tray.assemblies) return
+
+        for (let i = 0; i < this._tray.assemblies.length; i++) {
+            const visual = this._assemblyVisuals[i]
+            if (!visual) continue
+
+            const pos = this._tray.assemblies[i].position ?? [0, 0, 0] as Vec3Tuple
+            const rot = this._tray.assemblies[i].rotation ?? [0, 0, 0, 1] as QuatTuple
+            visual.setTransform(pos, rot)
+        }
+    }
+
+    private broadcastTrayState(): void {
+        const assemblies = (this._tray.assemblies ?? []).map((asm, i) => {
+            const visual = this._assemblyVisuals[i]
+            const rootNodeId = visual?.parser.rootNode
+            const rigidNodes = visual
+                ? [...visual.parser.rigidNodes.values()].map(rn => ({
+                    nodeId: rn.id,
+                    isDynamic: rn.isDynamic,
+                    fixed: asm.nodeOverrides?.[rn.id]?.fixed ?? false,
+                    isRoot: rn.id === rootNodeId,
                 }))
-                break
-            case OvenMessageType.RecordingData:
-                this._recordingChunks.push({
-                    bodies: msg.bodies,
-                    firstStep: msg.firstStep,
-                    lastStep: msg.lastStep,
-                })
-                console.log(`[Oven] Recording chunk: steps ${msg.firstStep}–${msg.lastStep} (${msg.bodies[0]?.keyframes.length ?? 0} frames)`)
-                break
-        }
-    }
+                : []
 
-    private setupOvenScene(): void {
-        for (const def of OVEN_BOXES) {
-            this.sendOven({
-                messageType: OvenMessageType.AddBody,
-                bodyId: def.bodyId,
-                halfExtents: def.halfExtents,
-                position: def.position,
-                rotation: [0, 0, 0, 1],
-                mass: def.mass,
-                fixed: def.fixed,
-            })
-            this.createBoxMesh(def)
-        }
-
-        this.sendOven({
-            messageType: OvenMessageType.AddJoint,
-            jointId: "hingeAB",
-            bodyIdA: "boxA",
-            bodyIdB: "boxB",
-            jointType: "hinge",
-            anchor: [0.5, 0.5, 0.0],
-            axis: [0, 0, 1],
+            return {
+                index: i,
+                name: this._assemblyNames[i] ?? "Unnamed Assembly",
+                motors: (asm.motors ?? []).map(m => ({
+                    jointGuid: m.jointGuid,
+                    mode: m.mode,
+                    targetValue: m.targetValue,
+                })),
+                rigidNodes,
+            }
         })
 
-        this.sendOven({ messageType: OvenMessageType.SaveState })
-        this.sendOven({
-            messageType: OvenMessageType.SetupRecorder,
-            framerate: RECORDER_FRAMERATE,
-            maxFrameBuffer: RECORDER_MAX_FRAME_BUFFER,
-        })
+        window.dispatchEvent(new CustomEvent("ovenResult", {
+            detail: { action: "trayUpdated", assemblies },
+        }))
     }
 
-    private createBoxMesh(def: OvenBoxDef): void {
-        const [hx, hy, hz] = def.halfExtents
-        const geometry = new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2)
-        const material = new THREE.MeshStandardMaterial({
-            color: def.color,
-            roughness: 0.4,
-            metalness: 0.1,
-        })
-        const mesh = new THREE.Mesh(geometry, material)
-        mesh.position.set(...def.position)
-        mesh.castShadow = true
-        mesh.receiveShadow = true
-
-        World.sceneRenderer.addObject(mesh)
-        this._boxMeshes.set(def.bodyId, mesh)
+    private broadcastEditingState(): void {
+        window.dispatchEvent(new CustomEvent("ovenResult", {
+            detail: { action: "editingState", locked: this._editingLocked },
+        }))
     }
 
-    private applyBodyStates(bodies: OvenBodyState[]): void {
-        for (const state of bodies) {
-            const mesh = this._boxMeshes.get(state.bodyId)
-            if (!mesh) continue
-
-            mesh.position.set(...state.position)
-            mesh.quaternion.set(...state.rotation)
+    private loadTrayAndSimulate(): void {
+        if (!this._tray.assemblies?.length && !this._tray.bodies.length) {
+            console.warn("[Oven] Tray is empty — nothing to simulate")
+            this._editingLocked = false
+            window.dispatchEvent(new CustomEvent("ovenResult", { detail: { action: "error" } }))
+            this.broadcastEditingState()
+            return
         }
+
+        this._oven!.loadTray(this._tray)
+        this._oven!.setupRecorder(RECORDER_FRAMERATE, RECORDER_MAX_FRAME_BUFFER)
+        this._oven!.saveState()
+        this._oven!.simulate(SIMULATE_STEPS)
+        this._oven!.getBodyStates()
     }
 
     private flattenRecording(): void {
@@ -291,51 +532,23 @@ class PrototypeEnvironment extends SceneEnvironment {
         this._totalRecordedFrames = this._flatRecording.get(bodyIds[0])?.length ?? 0
     }
 
-    private scrubToNormalized(t: number): void {
-        if (this._totalRecordedFrames < 2) return
-
-        const clamped = Math.max(0, Math.min(1, t))
-        const floatIndex = clamped * (this._totalRecordedFrames - 1)
-        const low = Math.floor(floatIndex)
-        const high = Math.min(low + 1, this._totalRecordedFrames - 1)
-        const alpha = floatIndex - low
-
-        const tmpPosA = new THREE.Vector3()
-        const tmpPosB = new THREE.Vector3()
-        const tmpQuatA = new THREE.Quaternion()
-        const tmpQuatB = new THREE.Quaternion()
-
-        for (const [bodyId, keyframes] of this._flatRecording) {
-            const mesh = this._boxMeshes.get(bodyId)
-            if (!mesh) continue
-
-            const kfA = keyframes[low]
-            const kfB = keyframes[high]
-
-            tmpPosA.set(...kfA.position)
-            tmpPosB.set(...kfB.position)
-            mesh.position.lerpVectors(tmpPosA, tmpPosB, alpha)
-
-            tmpQuatA.set(...kfA.rotation)
-            tmpQuatB.set(...kfB.rotation)
-            mesh.quaternion.slerpQuaternions(tmpQuatA, tmpQuatB, alpha)
-        }
-    }
     public destroyEnvironment(): void {
+        this.disableGizmo()
+
         if (this._ovenActionHandler) {
             window.removeEventListener("ovenAction", this._ovenActionHandler)
             this._ovenActionHandler = undefined
         }
-        if (this._ovenWorker) {
-            this._ovenWorker.terminate()
-            this._ovenWorker = undefined
+        if (this._oven) {
+            this._oven.destroy()
+            this._oven = undefined
         }
-        for (const [, mesh] of this._boxMeshes) {
-            World.sceneRenderer.removeObject(mesh)
-            mesh.geometry.dispose()
-            ;(mesh.material as THREE.MeshStandardMaterial).dispose()
+        for (const visual of this._assemblyVisuals) {
+            visual.removeFromScene(World.sceneRenderer.scene)
         }
-        this._boxMeshes.clear()
+        this._assemblyVisuals = []
+        this._assemblyNames = []
+        this._tray = { bodies: [], joints: [] }
 
         if (this._ambientLight) World.sceneRenderer.removeObject(this._ambientLight)
         if (this._directionalLight) World.sceneRenderer.removeObject(this._directionalLight)

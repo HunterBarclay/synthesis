@@ -7,7 +7,14 @@ import type {
     OvenBodyKeyframe,
     OvenRecordingBody,
     OvenJointType,
+    OvenTray,
+    OvenTrayAssembly,
+    OvenJointMotor,
+    OvenNodeOverride,
 } from "./OvenProtocol"
+import { mirabuf } from "@/proto/mirabuf"
+import MirabufParser from "@/mirabuf/MirabufParser"
+import MirabufPhysicsHandler, { type CreatedBody } from "@/mirabuf/MirabufPhysicsHandler"
 
 const DEFAULT_TIMESTEP = 1.0 / 240.0
 const DEFAULT_SUBSTEPS = 3
@@ -15,7 +22,9 @@ const DEFAULT_GRAVITY: Vec3Tuple = [0, -9.8, 0]
 
 const LAYER_STATIC = 0
 const LAYER_DYNAMIC = 1
-const COUNT_OBJECT_LAYERS = 2
+const ASSEMBLY_LAYERS: number[] = [2, 3, 4, 5, 6, 7, 8, 9]
+const MAX_ASSEMBLIES = ASSEMBLY_LAYERS.length
+const COUNT_OBJECT_LAYERS = 2 + MAX_ASSEMBLIES
 
 interface BodyRecord {
     id: string
@@ -23,9 +32,19 @@ interface BodyRecord {
     joltBodyId: Jolt.BodyID
 }
 
+type ConstraintKind = "hinge" | "slider" | "fixed"
+
 interface JointRecord {
     id: string
     constraint: Jolt.Constraint
+    kind: ConstraintKind
+}
+
+interface ActiveMotor {
+    jointId: string
+    record: JointRecord
+    mode: "velocity" | "position"
+    targetValue: number
 }
 
 interface BodySnapshot {
@@ -47,6 +66,11 @@ export type RecordingFlushCallback = (
     lastStep: number,
 ) => void
 
+export type ProgressCallback = (
+    completedSteps: number,
+    totalSteps: number,
+) => void
+
 const DEFAULT_SAVE_SLOT = "__default__"
 
 class OvenSystem {
@@ -59,10 +83,14 @@ class OvenSystem {
 
     private _bodies: Map<string, BodyRecord> = new Map()
     private _joints: Map<string, JointRecord> = new Map()
+    private _activeMotors: ActiveMotor[] = []
     private _savedStates: Map<string, Map<string, BodySnapshot>> = new Map()
 
     private _recorder: RecorderConfig | undefined
     private _onRecordingFlush: RecordingFlushCallback | undefined
+
+    private _progressInterval: number = 0
+    private _onProgress: ProgressCallback | undefined
 
     public get timestep(): number { return this._timestep }
     public set timestep(v: number) { this._timestep = v }
@@ -86,7 +114,7 @@ class OvenSystem {
         settings.mPenetrationSlop = 0.005
     }
 
-    public configure(gravity?: Vec3Tuple, timestep?: number, substeps?: number): void {
+    public configure(gravity?: Vec3Tuple, timestep?: number, substeps?: number, progressInterval?: number): void {
         if (gravity) {
             this._physicsSystem.SetGravity(new JOLT.Vec3(...gravity))
         }
@@ -96,9 +124,227 @@ class OvenSystem {
         if (substeps !== undefined) {
             this._substeps = substeps
         }
+        if (progressInterval !== undefined) {
+            this._progressInterval = progressInterval
+        }
     }
 
-    public addBody(
+    public loadTray(tray: OvenTray): void {
+        this.clearScene()
+
+        for (const body of tray.bodies) {
+            this.addBody(
+                body.bodyId,
+                body.halfExtents,
+                body.position,
+                body.rotation,
+                body.mass,
+                body.fixed,
+                body.friction,
+                body.restitution,
+            )
+        }
+
+        for (const joint of tray.joints) {
+            this.addJoint(
+                joint.jointId,
+                joint.bodyIdA,
+                joint.bodyIdB,
+                joint.jointType,
+                joint.anchor,
+                joint.axis,
+                joint.limitsMin,
+                joint.limitsMax,
+            )
+        }
+
+        if (tray.assemblies) {
+            for (let i = 0; i < tray.assemblies.length; i++) {
+                this.loadAssembly(tray.assemblies[i], i)
+            }
+        }
+    }
+
+    private loadAssembly(asm: OvenTrayAssembly, index: number): void {
+        if (index >= MAX_ASSEMBLIES) {
+            console.error(`[Oven] Maximum assembly count (${MAX_ASSEMBLIES}) exceeded`)
+            return
+        }
+
+        const assembly = mirabuf.Assembly.decode(asm.assemblyData)
+        const parser = new MirabufParser(assembly)
+        const handler = new MirabufPhysicsHandler(this._bodyInterface, this._physicsSystem)
+
+        const asmLayer = ASSEMBLY_LAYERS[index]
+        const bodyResult = handler.createBodiesFromParser(parser, {
+            layerResolver: () => asmLayer,
+        })
+
+        const prefix = `_asm${index}_`
+        for (const created of bodyResult.createdBodies) {
+            this._bodies.set(prefix + created.nodeId, {
+                id: prefix + created.nodeId,
+                joltBody: created.body,
+                joltBodyId: created.bodyId,
+            })
+        }
+
+        if (asm.nodeOverrides) {
+            this.applyNodeOverrides(asm.nodeOverrides, bodyResult.createdBodies)
+        }
+
+        if (asm.position || asm.rotation) {
+            this.applyAssemblyTransform(bodyResult.createdBodies, asm.position, asm.rotation)
+        }
+
+        const jointWorldTransform = (asm.position || asm.rotation)
+            ? {
+                position: asm.position ?? [0, 0, 0] as [number, number, number],
+                rotation: asm.rotation ?? [0, 0, 0, 1] as [number, number, number, number],
+            }
+            : undefined
+
+        const jointResult = handler.createJointsFromParser(parser, bodyResult.nodeToBodyId, jointWorldTransform)
+
+        const motorLookup = new Map<string, OvenJointMotor>()
+        if (asm.motors) {
+            for (const motor of asm.motors) {
+                motorLookup.set(motor.jointGuid, motor)
+            }
+        }
+
+        for (const created of jointResult.createdJoints) {
+            const kind: ConstraintKind =
+                created.motionType === mirabuf.joint.JointMotion.REVOLUTE ? "hinge"
+                : created.motionType === mirabuf.joint.JointMotion.SLIDER ? "slider"
+                : "fixed"
+
+            const jointId = `_asm${index}_${created.jointGuid}`
+            const record: JointRecord = { id: jointId, constraint: created.constraint, kind }
+            this._joints.set(jointId, record)
+
+            const motorDef = motorLookup.get(created.jointGuid)
+            if (motorDef) {
+                this.applyMotor(record, motorDef)
+            }
+        }
+    }
+
+    private applyMotor(record: JointRecord, motor: OvenJointMotor): void {
+        if (record.kind === "hinge") {
+            const hinge = JOLT.castObject(record.constraint, JOLT.HingeConstraint)
+            const motorSettings = hinge.GetMotorSettings()
+
+            if (motor.maxTorque !== undefined) {
+                motorSettings.mMaxTorqueLimit = motor.maxTorque
+                motorSettings.mMinTorqueLimit = -motor.maxTorque
+            }
+
+            if (motor.mode === "velocity") {
+                hinge.SetMotorState(JOLT.EMotorState_Velocity)
+                hinge.SetTargetAngularVelocity(motor.targetValue)
+            } else {
+                hinge.SetMotorState(JOLT.EMotorState_Position)
+                hinge.SetTargetAngle(motor.targetValue)
+            }
+
+            this._activeMotors.push({
+                jointId: record.id,
+                record,
+                mode: motor.mode,
+                targetValue: motor.targetValue,
+            })
+        } else if (record.kind === "slider") {
+            const slider = JOLT.castObject(record.constraint, JOLT.SliderConstraint)
+            const motorSettings = slider.GetMotorSettings()
+
+            if (motor.maxForce !== undefined) {
+                motorSettings.mMaxForceLimit = motor.maxForce
+                motorSettings.mMinForceLimit = -motor.maxForce
+            }
+
+            if (motor.mode === "velocity") {
+                slider.SetMotorState(JOLT.EMotorState_Velocity)
+                slider.SetTargetVelocity(motor.targetValue)
+            } else {
+                slider.SetMotorState(JOLT.EMotorState_Position)
+                slider.SetTargetPosition(motor.targetValue)
+            }
+
+            this._activeMotors.push({
+                jointId: record.id,
+                record,
+                mode: motor.mode,
+                targetValue: motor.targetValue,
+            })
+        }
+    }
+
+    private applyNodeOverrides(
+        overrides: Record<string, OvenNodeOverride>,
+        createdBodies: CreatedBody[],
+    ): void {
+        for (const created of createdBodies) {
+            const override = overrides[created.nodeId]
+            if (!override) continue
+
+            if (override.fixed) {
+                this._bodyInterface.SetMotionType(
+                    created.bodyId,
+                    JOLT.EMotionType_Static,
+                    JOLT.EActivation_DontActivate,
+                )
+            }
+        }
+    }
+
+    private applyAssemblyTransform(
+        createdBodies: CreatedBody[],
+        position?: Vec3Tuple,
+        rotation?: QuatTuple,
+    ): void {
+        const asmPos = position ?? [0, 0, 0]
+        const asmRot = rotation ?? [0, 0, 0, 1]
+        const asmQuat = new JOLT.Quat(asmRot[0], asmRot[1], asmRot[2], asmRot[3])
+
+        for (const created of createdBodies) {
+            const curPos = this._bodyInterface.GetPosition(created.bodyId)
+            const curRot = this._bodyInterface.GetRotation(created.bodyId)
+
+            const rotated = asmQuat.MulVec3(new JOLT.Vec3(curPos.GetX(), curPos.GetY(), curPos.GetZ()))
+            const newPos = new JOLT.RVec3(
+                rotated.GetX() + asmPos[0],
+                rotated.GetY() + asmPos[1],
+                rotated.GetZ() + asmPos[2],
+            )
+            const newRot = asmQuat.MulQuat(curRot)
+
+            this._bodyInterface.SetPositionAndRotation(
+                created.bodyId,
+                newPos,
+                newRot,
+                JOLT.EActivation_Activate,
+            )
+        }
+    }
+
+    private clearScene(): void {
+        this._activeMotors = []
+
+        for (const [, joint] of this._joints) {
+            this._physicsSystem.RemoveConstraint(joint.constraint)
+        }
+        this._joints.clear()
+
+        for (const [, record] of this._bodies) {
+            this._bodyInterface.RemoveBody(record.joltBodyId)
+            this._bodyInterface.DestroyBody(record.joltBodyId)
+        }
+        this._bodies.clear()
+        this._savedStates.clear()
+    }
+
+    private addBody(
         bodyId: string,
         halfExtents: Vec3Tuple,
         position: Vec3Tuple,
@@ -147,69 +393,7 @@ class OvenSystem {
         })
     }
 
-    public moveBody(
-        bodyId: string,
-        position?: Vec3Tuple,
-        rotation?: QuatTuple,
-        linearVelocity?: Vec3Tuple,
-        angularVelocity?: Vec3Tuple,
-    ): void {
-        const record = this._bodies.get(bodyId)
-        if (!record) {
-            throw new Error(`Body '${bodyId}' not found`)
-        }
-
-        if (position && rotation) {
-            this._bodyInterface.SetPositionAndRotation(
-                record.joltBodyId,
-                new JOLT.RVec3(...position),
-                new JOLT.Quat(...rotation),
-                JOLT.EActivation_Activate,
-            )
-        } else if (position) {
-            this._bodyInterface.SetPosition(
-                record.joltBodyId,
-                new JOLT.RVec3(...position),
-                JOLT.EActivation_Activate,
-            )
-        } else if (rotation) {
-            this._bodyInterface.SetRotation(
-                record.joltBodyId,
-                new JOLT.Quat(...rotation),
-                JOLT.EActivation_Activate,
-            )
-        }
-
-        if (linearVelocity) {
-            this._bodyInterface.SetLinearVelocity(record.joltBodyId, new JOLT.Vec3(...linearVelocity))
-        }
-        if (angularVelocity) {
-            this._bodyInterface.SetAngularVelocity(record.joltBodyId, new JOLT.Vec3(...angularVelocity))
-        }
-    }
-
-    public removeBody(bodyId: string): void {
-        const record = this._bodies.get(bodyId)
-        if (!record) {
-            throw new Error(`Body '${bodyId}' not found`)
-        }
-
-        const jointsToRemove: string[] = []
-        for (const [jointId, joint] of this._joints) {
-            // Constraints don't expose body references directly; track removal
-            // by checking the joint record at add time instead. For now, the
-            // caller is responsible for removing joints before their bodies.
-            void joint
-            void jointId
-        }
-        jointsToRemove.forEach(id => this.removeJoint(id))
-
-        this._bodyInterface.RemoveBody(record.joltBodyId)
-        this._bodyInterface.DestroyBody(record.joltBodyId)
-        this._bodies.delete(bodyId)
-    }
-
-    public addJoint(
+    private addJoint(
         jointId: string,
         bodyIdA: string,
         bodyIdB: string,
@@ -232,11 +416,14 @@ class OvenSystem {
         const anchorPoint = new JOLT.RVec3(...anchor)
         let constraint: Jolt.Constraint
 
+        let kind: ConstraintKind
+
         switch (jointType) {
             case "fixed": {
                 const settings = new JOLT.FixedConstraintSettings()
                 settings.mPoint1 = settings.mPoint2 = anchorPoint
                 constraint = settings.Create(recordA.joltBody, recordB.joltBody)
+                kind = "fixed"
                 break
             }
             case "hinge": {
@@ -250,6 +437,7 @@ class OvenSystem {
                 if (limitsMin !== undefined) settings.mLimitsMin = limitsMin
                 if (limitsMax !== undefined) settings.mLimitsMax = limitsMax
                 constraint = settings.Create(recordA.joltBody, recordB.joltBody)
+                kind = "hinge"
                 break
             }
             case "slider": {
@@ -263,6 +451,7 @@ class OvenSystem {
                 if (limitsMin !== undefined) settings.mLimitsMin = limitsMin
                 if (limitsMax !== undefined) settings.mLimitsMax = limitsMax
                 constraint = settings.Create(recordA.joltBody, recordB.joltBody)
+                kind = "slider"
                 break
             }
             default:
@@ -270,17 +459,7 @@ class OvenSystem {
         }
 
         this._physicsSystem.AddConstraint(constraint)
-        this._joints.set(jointId, { id: jointId, constraint })
-    }
-
-    public removeJoint(jointId: string): void {
-        const record = this._joints.get(jointId)
-        if (!record) {
-            throw new Error(`Joint '${jointId}' not found`)
-        }
-
-        this._physicsSystem.RemoveConstraint(record.constraint)
-        this._joints.delete(jointId)
+        this._joints.set(jointId, { id: jointId, constraint, kind })
     }
 
     public setupRecorder(framerate: number, maxFrameBuffer: number): void {
@@ -296,10 +475,22 @@ class OvenSystem {
         this._onRecordingFlush = cb
     }
 
+    public setProgressCallback(cb: ProgressCallback | undefined): void {
+        this._onProgress = cb
+    }
+
     public simulate(steps: number): void {
+        const shouldReportProgress = this._progressInterval > 0 && this._onProgress
+        let nextProgressAt = shouldReportProgress ? this._progressInterval : steps + 1
+
         if (!this._recorder || !this._onRecordingFlush) {
             for (let i = 0; i < steps; i++) {
                 this._joltInterface.Step(this._timestep, this._substeps)
+
+                if (i + 1 >= nextProgressAt) {
+                    this._onProgress!(i + 1, steps)
+                    nextProgressAt += this._progressInterval
+                }
             }
             return
         }
@@ -351,6 +542,11 @@ class OvenSystem {
                 if (framesInBuffer >= maxFrameBuffer) {
                     flush(i)
                 }
+            }
+
+            if (i + 1 >= nextProgressAt) {
+                this._onProgress!(i + 1, steps)
+                nextProgressAt += this._progressInterval
             }
         }
 
@@ -424,18 +620,7 @@ class OvenSystem {
     }
 
     public destroy(): void {
-        for (const [, joint] of this._joints) {
-            this._physicsSystem.RemoveConstraint(joint.constraint)
-        }
-        this._joints.clear()
-
-        for (const [, record] of this._bodies) {
-            this._bodyInterface.RemoveBody(record.joltBodyId)
-            this._bodyInterface.DestroyBody(record.joltBodyId)
-        }
-        this._bodies.clear()
-        this._savedStates.clear()
-
+        this.clearScene()
         JOLT.destroy(this._joltInterface)
     }
 
@@ -444,12 +629,27 @@ class OvenSystem {
         objectFilter.EnableCollision(LAYER_STATIC, LAYER_DYNAMIC)
         objectFilter.EnableCollision(LAYER_DYNAMIC, LAYER_DYNAMIC)
 
+        for (const asmLayer of ASSEMBLY_LAYERS) {
+            objectFilter.EnableCollision(LAYER_STATIC, asmLayer)
+            objectFilter.EnableCollision(LAYER_DYNAMIC, asmLayer)
+        }
+
+        for (let i = 0; i < ASSEMBLY_LAYERS.length - 1; i++) {
+            for (let j = i + 1; j < ASSEMBLY_LAYERS.length; j++) {
+                objectFilter.EnableCollision(ASSEMBLY_LAYERS[i], ASSEMBLY_LAYERS[j])
+            }
+        }
+
         const BP_STATIC = new JOLT.BroadPhaseLayer(LAYER_STATIC)
         const BP_DYNAMIC = new JOLT.BroadPhaseLayer(LAYER_DYNAMIC)
+        const bpAssemblyLayers = ASSEMBLY_LAYERS.map(l => new JOLT.BroadPhaseLayer(l))
 
         const bpInterface = new JOLT.BroadPhaseLayerInterfaceTable(COUNT_OBJECT_LAYERS, COUNT_OBJECT_LAYERS)
         bpInterface.MapObjectToBroadPhaseLayer(LAYER_STATIC, BP_STATIC)
         bpInterface.MapObjectToBroadPhaseLayer(LAYER_DYNAMIC, BP_DYNAMIC)
+        bpAssemblyLayers.forEach((bp, i) => {
+            bpInterface.MapObjectToBroadPhaseLayer(ASSEMBLY_LAYERS[i], bp)
+        })
 
         settings.mObjectLayerPairFilter = objectFilter
         settings.mBroadPhaseLayerInterface = bpInterface

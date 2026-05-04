@@ -28,6 +28,7 @@ import MainEnvironment from "./systems/scene/environments/MainEnvironment.ts"
 import PrototypeEnvironment from "./systems/scene/environments/PrototypeEnvironment.ts"
 import UserCard from "./ui/components/hub/UserCard.tsx"
 import OvenActionBar from "./ui/components/OvenActionBar.tsx"
+import OvenTrayPanel from "./ui/components/OvenTrayPanel.tsx"
 
 function Synthesis() {
     const [consentPopupDisable, setConsentPopupDisable] = useState<boolean>(true)
@@ -133,6 +134,7 @@ function Synthesis() {
                                     top: '4pt'
                                 }}/>
                                 <OvenActionBar />
+                                <OvenTrayPanel />
                             </>) : (<>
                                 <MultiplayerHUD />
                                 <MainHUD key={"main-hud"} />

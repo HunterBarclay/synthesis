@@ -16,15 +16,15 @@ The Oven is a background physics simulation system that runs Jolt Physics in a W
 ┌─────────────────────┐       postMessage        ┌───────────────────┐
 │   Main Thread       │ ──────────────────────▶  │   OvenWorker.ts   │
 │                     │                          │                   │
-│  PrototypeEnv /     │  ◀──────────────────────  │   OvenSystem.ts   │
+│  PrototypeEnv /     │  ◀────────────────────── │   OvenSystem.ts   │
 │  any consumer       │       postMessage        │   (Jolt Physics)  │
 └─────────────────────┘                          └───────────────────┘
         │  ▲                                            │
         │  │  window CustomEvents                       │
         ▼  │  ("ovenAction" / "ovenResult")             │
 ┌─────────────────────┐                     Uses OvenProtocol.ts
-│  OvenActionBar.tsx   │                     for all message shapes
-│  (React UI)          │
+│  OvenActionBar.tsx  │                     for all message shapes
+│  (React UI)         │
 └─────────────────────┘
 ```
 
