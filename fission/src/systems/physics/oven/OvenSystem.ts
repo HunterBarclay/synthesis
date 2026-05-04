@@ -197,6 +197,10 @@ class OvenSystem {
             this.applyAssemblyTransform(bodyResult.createdBodies, asm.position, asm.rotation)
         }
 
+        if (asm.initialLinearVelocity || asm.initialAngularVelocity) {
+            this.applyAssemblyVelocities(bodyResult.createdBodies, asm.initialLinearVelocity, asm.initialAngularVelocity)
+        }
+
         const jointWorldTransform = (asm.position || asm.rotation)
             ? {
                 position: asm.position ?? [0, 0, 0] as [number, number, number],
@@ -325,6 +329,22 @@ class OvenSystem {
                 newRot,
                 JOLT.EActivation_Activate,
             )
+        }
+    }
+
+    private applyAssemblyVelocities(
+        createdBodies: CreatedBody[],
+        linearVelocity?: Vec3Tuple,
+        angularVelocity?: Vec3Tuple,
+    ): void {
+        const linVel = linearVelocity ? new JOLT.Vec3(...linearVelocity) : undefined
+        const angVel = angularVelocity ? new JOLT.Vec3(...angularVelocity) : undefined
+
+        for (const created of createdBodies) {
+            if (this._bodyInterface.GetMotionType(created.bodyId) === JOLT.EMotionType_Static) continue
+
+            if (linVel) this._bodyInterface.SetLinearVelocity(created.bodyId, linVel)
+            if (angVel) this._bodyInterface.SetAngularVelocity(created.bodyId, angVel)
         }
     }
 

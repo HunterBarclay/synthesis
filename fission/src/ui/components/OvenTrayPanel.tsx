@@ -10,6 +10,8 @@ import {
     ListItemText,
     Chip,
     Divider,
+    FormControlLabel,
+    Switch,
 } from "@mui/material"
 import { useEffect, useState, useCallback } from "react"
 import { FaGear } from "react-icons/fa6"
@@ -24,12 +26,26 @@ export interface OvenTrayPanelAssembly {
     name: string
     motors: OvenTrayPanelMotor[]
     rigidNodes: OvenTrayPanelRigidNode[]
+    joints: OvenTrayPanelJoint[]
+    initialLinearVelocity?: [number, number, number]
+    initialAngularVelocity?: [number, number, number]
 }
 
 export interface OvenTrayPanelMotor {
     jointGuid: string
     mode: OvenMotorMode
     targetValue: number
+    maxForce?: number
+    maxTorque?: number
+}
+
+export type JointMotionType = "revolute" | "slider" | "rigid" | "unknown"
+
+export interface OvenTrayPanelJoint {
+    jointGuid: string
+    name: string
+    motionType: JointMotionType
+    hasMotor: boolean
 }
 
 export interface OvenTrayPanelRigidNode {
@@ -45,17 +61,25 @@ interface GizmoState {
     mode: "translate" | "rotate"
 }
 
+interface EnvironmentSettings {
+    groundEnabled: boolean
+}
+
 const OvenTrayPanel: React.FC = () => {
     const { openModal } = useUIContext()
     const [assemblies, setAssemblies] = useState<OvenTrayPanelAssembly[]>([])
     const [editingLocked, setEditingLocked] = useState(false)
     const [gizmo, setGizmo] = useState<GizmoState>({ active: false, assemblyIndex: -1, mode: "translate" })
+    const [envSettings, setEnvSettings] = useState<EnvironmentSettings>({ groundEnabled: false })
 
     useEffect(() => {
         const onResult = (e: Event) => {
             const detail = (e as CustomEvent).detail
             if (detail?.action === "trayUpdated") {
                 setAssemblies(detail.assemblies as OvenTrayPanelAssembly[])
+                if (detail.environment) {
+                    setEnvSettings(detail.environment as EnvironmentSettings)
+                }
             } else if (detail?.action === "editingState") {
                 setEditingLocked(detail.locked as boolean)
                 if (detail.locked) {
@@ -86,23 +110,8 @@ const OvenTrayPanel: React.FC = () => {
             targetType: "assembly",
             assemblyIndex: asm.index,
             assemblyName: asm.name,
-        })
-    }, [editingLocked, openModal])
-
-    const handleRemoveMotor = useCallback((assemblyIndex: number, jointGuid: string) => {
-        if (editingLocked) return
-        window.dispatchEvent(new CustomEvent("ovenAction", {
-            detail: { action: "removeMotor", assemblyIndex, jointGuid },
-        }))
-    }, [editingLocked])
-
-    const handleConfigureMotor = useCallback((asm: OvenTrayPanelAssembly, motor: OvenTrayPanelMotor) => {
-        if (editingLocked) return
-        openModal(OvenConfigModal, {
-            targetType: "motor",
-            assemblyIndex: asm.index,
-            assemblyName: asm.name,
-            jointGuid: motor.jointGuid,
+            initialLinearVelocity: asm.initialLinearVelocity,
+            initialAngularVelocity: asm.initialAngularVelocity,
         })
     }, [editingLocked, openModal])
 
@@ -114,6 +123,25 @@ const OvenTrayPanel: React.FC = () => {
             assemblyName: asm.name,
             nodeId: node.nodeId,
             nodeFixed: node.fixed,
+        })
+    }, [editingLocked, openModal])
+
+    const handleConfigureJoint = useCallback((asm: OvenTrayPanelAssembly, joint: OvenTrayPanelJoint) => {
+        if (editingLocked) return
+        const existingMotor = asm.motors.find(m => m.jointGuid === joint.jointGuid)
+        const existingForce = existingMotor
+            ? (joint.motionType === "revolute" ? existingMotor.maxTorque : existingMotor.maxForce)
+            : undefined
+        openModal(OvenConfigModal, {
+            targetType: "joint",
+            assemblyIndex: asm.index,
+            assemblyName: asm.name,
+            jointGuid: joint.jointGuid,
+            jointName: joint.name,
+            jointMotionType: joint.motionType,
+            motorMode: existingMotor?.mode ?? "velocity",
+            motorTargetValue: existingMotor?.targetValue ?? 0,
+            motorMaxForce: existingForce,
         })
     }, [editingLocked, openModal])
 
@@ -137,7 +165,12 @@ const OvenTrayPanel: React.FC = () => {
         }))
     }, [])
 
-    if (assemblies.length === 0) return null
+    const handleToggleGround = useCallback((enabled: boolean) => {
+        if (editingLocked) return
+        window.dispatchEvent(new CustomEvent("ovenAction", {
+            detail: { action: "setGroundEnabled", enabled },
+        }))
+    }, [editingLocked])
 
     const isGizmoActiveFor = (asmIndex: number) => gizmo.active && gizmo.assemblyIndex === asmIndex
 
@@ -152,12 +185,42 @@ const OvenTrayPanel: React.FC = () => {
                 overflowY: "auto",
             }}
         >
-            <Typography
-                variant="subtitle2"
-                sx={{ px: 2, pt: 1.5, pb: 0.5, color: "text.secondary", textTransform: "uppercase", letterSpacing: 1, fontSize: "0.7rem" }}
-            >
-                Tray Contents
-            </Typography>
+            {/* Environment Settings */}
+            <Accordion disableGutters elevation={0} sx={{ "&:before": { display: "none" }, bgcolor: "transparent" }}>
+                <AccordionSummary
+                    expandIcon={<MdExpandMore />}
+                    sx={{ px: 2, minHeight: 40, "& .MuiAccordionSummary-content": { alignItems: "center", gap: 1 } }}
+                >
+                    <Typography
+                        variant="subtitle2"
+                        sx={{ color: "text.secondary", textTransform: "uppercase", letterSpacing: 1, fontSize: "0.7rem" }}
+                    >
+                        Environment
+                    </Typography>
+                </AccordionSummary>
+                <AccordionDetails sx={{ px: 2, pt: 0, pb: 1 }}>
+                    <FormControlLabel
+                        control={
+                            <Switch
+                                size="small"
+                                checked={envSettings.groundEnabled}
+                                disabled={editingLocked}
+                                onChange={(_, checked) => handleToggleGround(checked)}
+                            />
+                        }
+                        label={<Typography variant="body2">Ground Plane</Typography>}
+                    />
+                </AccordionDetails>
+            </Accordion>
+
+            {assemblies.length > 0 && (
+                <Typography
+                    variant="subtitle2"
+                    sx={{ px: 2, pt: 0.5, pb: 0.5, color: "text.secondary", textTransform: "uppercase", letterSpacing: 1, fontSize: "0.7rem" }}
+                >
+                    Assemblies
+                </Typography>
+            )}
 
             {assemblies.map(asm => (
                 <Accordion
@@ -313,67 +376,77 @@ const OvenTrayPanel: React.FC = () => {
                             </List>
                         )}
 
-                        {asm.motors.length > 0 && <Divider sx={{ my: 0.5 }} />}
+                        <Divider sx={{ my: 0.5 }} />
 
-                        {/* Motors */}
-                        {asm.motors.length > 0 && (
-                            <>
-                                <Typography
-                                    variant="caption"
-                                    sx={{ pl: 2, color: "text.secondary", fontWeight: 600, textTransform: "uppercase", fontSize: "0.6rem", letterSpacing: 0.5 }}
-                                >
-                                    Motors
-                                </Typography>
-                                <List dense disablePadding>
-                                    {asm.motors.map(motor => (
+                        {/* Joints */}
+                        <Typography
+                            variant="caption"
+                            sx={{ pl: 2, color: "text.secondary", fontWeight: 600, textTransform: "uppercase", fontSize: "0.6rem", letterSpacing: 0.5 }}
+                        >
+                            Joints
+                        </Typography>
+                        {asm.joints.length === 0 ? (
+                            <Typography variant="caption" sx={{ color: "text.disabled", pl: 2, display: "block" }}>
+                                No joints
+                            </Typography>
+                        ) : (
+                            <List dense disablePadding>
+                                {asm.joints.map(joint => {
+                                    const isConfigurable = joint.motionType === "revolute" || joint.motionType === "slider"
+                                    return (
                                         <ListItem
-                                            key={motor.jointGuid}
+                                            key={joint.jointGuid}
                                             sx={{ pl: 2, pr: 1, py: 0.25 }}
                                             secondaryAction={
-                                                <Stack direction="row" gap={0}>
+                                                isConfigurable ? (
                                                     <IconButton
                                                         size="small"
                                                         edge="end"
                                                         disabled={editingLocked}
-                                                        onClick={() => handleConfigureMotor(asm, motor)}
+                                                        onClick={() => handleConfigureJoint(asm, joint)}
                                                         sx={{ color: "text.secondary" }}
                                                     >
                                                         <FaGear size={12} />
                                                     </IconButton>
-                                                    <IconButton
-                                                        size="small"
-                                                        edge="end"
-                                                        disabled={editingLocked}
-                                                        onClick={() => handleRemoveMotor(asm.index, motor.jointGuid)}
-                                                        sx={{ color: "error.main" }}
-                                                    >
-                                                        <IoTrashBin size={12} />
-                                                    </IconButton>
-                                                </Stack>
+                                                ) : undefined
                                             }
                                         >
                                             <ListItemText
                                                 primary={
                                                     <Stack direction="row" alignItems="center" gap={0.75}>
-                                                        <Typography variant="caption" noWrap sx={{ maxWidth: 120 }}>
-                                                            {motor.jointGuid.slice(0, 8)}…
+                                                        <Typography variant="caption" noWrap sx={{ maxWidth: 110 }}>
+                                                            {joint.name}
                                                         </Typography>
                                                         <Chip
-                                                            label={motor.mode}
+                                                            label={joint.motionType}
                                                             size="small"
+                                                            color={
+                                                                joint.motionType === "revolute" ? "primary"
+                                                                : joint.motionType === "slider" ? "secondary"
+                                                                : "default"
+                                                            }
                                                             variant="outlined"
-                                                            sx={{ height: 18, fontSize: "0.65rem" }}
+                                                            sx={{ height: 18, fontSize: "0.6rem" }}
                                                         />
+                                                        {joint.hasMotor && (
+                                                            <Chip
+                                                                label="motor"
+                                                                size="small"
+                                                                color="success"
+                                                                variant="filled"
+                                                                sx={{ height: 18, fontSize: "0.6rem" }}
+                                                            />
+                                                        )}
                                                     </Stack>
                                                 }
                                             />
                                         </ListItem>
-                                    ))}
-                                </List>
-                            </>
+                                    )
+                                })}
+                            </List>
                         )}
 
-                        {asm.rigidNodes.length === 0 && asm.motors.length === 0 && (
+                        {asm.rigidNodes.length === 0 && asm.joints.length === 0 && (
                             <Typography variant="caption" sx={{ color: "text.disabled", pl: 2 }}>
                                 Empty assembly
                             </Typography>

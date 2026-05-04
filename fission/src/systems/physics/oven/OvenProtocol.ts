@@ -64,6 +64,8 @@ export interface OvenTrayAssembly {
     nodeOverrides?: Record<string, OvenNodeOverride>
     position?: Vec3Tuple
     rotation?: QuatTuple
+    initialLinearVelocity?: Vec3Tuple
+    initialAngularVelocity?: Vec3Tuple
 }
 
 export interface OvenTray {

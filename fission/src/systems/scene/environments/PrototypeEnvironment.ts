@@ -14,8 +14,9 @@ import ImportPrototypeModal from "@/ui/modals/mirabuf/ImportPrototypeModal";
 import OvenHandler from "@/systems/physics/oven/OvenHandler"
 import type { OvenTray, OvenTrayAssembly, OvenJointMotor, OvenBodyKeyframe, Vec3Tuple, QuatTuple } from "@/systems/physics/oven/OvenProtocol"
 import type { OvenRecordingChunk } from "@/systems/physics/oven/OvenHandler"
-import MirabufParser from "@/mirabuf/MirabufParser"
+import MirabufParser, { GROUNDED_JOINT_ID } from "@/mirabuf/MirabufParser"
 import OvenMirabufInstance from "@/mirabuf/OvenMirabufInstance"
+import { mirabuf } from "@/proto/mirabuf"
 
 const OVEN_TIMESTEP = 1.0 / 240.0
 const SIMULATE_SECONDS = 10
@@ -24,6 +25,10 @@ const SIMULATE_STEPS = Math.round(SIMULATE_SECONDS / OVEN_TIMESTEP)
 const RECORDER_FRAMERATE = 60
 const RECORDER_MAX_FRAME_BUFFER = 300
 const PROGRESS_INTERVAL = Math.round(SIMULATE_STEPS / 20)
+
+const GROUND_BODY_ID = "_env_ground"
+const GROUND_HALF_EXTENTS: Vec3Tuple = [5.0, 0.5, 5.0]
+const GROUND_POSITION: Vec3Tuple = [0.0, -0.5, 0.0]
 
 class PrototypeEnvironment extends SceneEnvironment {
 
@@ -49,6 +54,8 @@ class PrototypeEnvironment extends SceneEnvironment {
     private _activeGizmoIndex: number = -1
     private _gizmoDragListener: (() => void) | undefined
     private _gizmoDraggingListener: ((e: { value: unknown }) => void) | undefined
+
+    private _groundEnabled: boolean = false
 
     public createEnvironment(): void {
         const sceneRenderer = World.sceneRenderer;
@@ -212,12 +219,45 @@ class PrototypeEnvironment extends SceneEnvironment {
             } else if (detail?.action === "removeAssembly") {
                 if (this._editingLocked) return
                 this.removeAssembly(detail.assemblyIndex as number)
+            } else if (detail?.action === "setMotor") {
+                if (this._editingLocked) return
+                const asmIdx = detail.assemblyIndex as number
+                const jGuid = detail.jointGuid as string
+                const mode = detail.mode as "velocity" | "position"
+                const tVal = detail.targetValue as number
+                const mForce = detail.maxForce as number | undefined
+                const visual = this._assemblyVisuals[asmIdx]
+                const isRevolute = visual?.parser.assembly.data?.joints?.jointDefinitions
+                    ? (() => {
+                        const instances = visual.parser.assembly.data!.joints!.jointInstances!
+                        const inst = instances[jGuid]
+                        if (!inst) return false
+                        const def = visual.parser.assembly.data!.joints!.jointDefinitions![inst.jointReference!]
+                        return def?.jointMotionType === mirabuf.joint.JointMotion.REVOLUTE
+                    })()
+                    : false
+                const motor: OvenJointMotor = {
+                    jointGuid: jGuid,
+                    mode,
+                    targetValue: tVal,
+                    ...(isRevolute ? { maxTorque: mForce } : { maxForce: mForce }),
+                }
+                this.setMotor(asmIdx, motor)
             } else if (detail?.action === "removeMotor") {
                 if (this._editingLocked) return
                 this.removeMotor(detail.assemblyIndex as number, detail.jointGuid as string)
             } else if (detail?.action === "setNodeFixed") {
                 if (this._editingLocked) return
                 this.setNodeFixed(detail.assemblyIndex as number, detail.nodeId as string, detail.fixed as boolean)
+            } else if (detail?.action === "configureAssembly") {
+                if (this._editingLocked) return
+                const idx = detail.assemblyIndex as number
+                if (this._tray.assemblies && idx >= 0 && idx < this._tray.assemblies.length) {
+                    const asm = this._tray.assemblies[idx]
+                    asm.initialLinearVelocity = detail.initialLinearVelocity as Vec3Tuple | undefined
+                    asm.initialAngularVelocity = detail.initialAngularVelocity as Vec3Tuple | undefined
+                    this.broadcastTrayState()
+                }
             } else if (detail?.action === "gizmoTransformUpdate") {
                 if (this._editingLocked) return
                 const idx = detail.assemblyIndex as number
@@ -233,6 +273,9 @@ class PrototypeEnvironment extends SceneEnvironment {
                 }
             } else if (detail?.action === "disableGizmo") {
                 this.disableGizmo()
+            } else if (detail?.action === "setGroundEnabled") {
+                if (this._editingLocked) return
+                this.setGroundEnabled(detail.enabled as boolean)
             }
         }
         window.addEventListener("ovenAction", this._ovenActionHandler)
@@ -337,6 +380,34 @@ class PrototypeEnvironment extends SceneEnvironment {
             asm.nodeOverrides[nodeId] = {}
         }
         asm.nodeOverrides[nodeId].fixed = fixed
+
+        this.broadcastTrayState()
+    }
+
+    public setGroundEnabled(enabled: boolean): void {
+        if (enabled === this._groundEnabled) return
+        this._groundEnabled = enabled
+
+        const existingIdx = this._tray.bodies.findIndex(b => b.bodyId === GROUND_BODY_ID)
+
+        if (enabled) {
+            if (existingIdx === -1) {
+                this._tray.bodies.push({
+                    bodyId: GROUND_BODY_ID,
+                    halfExtents: GROUND_HALF_EXTENTS,
+                    position: GROUND_POSITION,
+                    rotation: [0, 0, 0, 1],
+                    fixed: true,
+                    friction: 0.6,
+                    restitution: 0.3,
+                })
+            }
+
+        } else {
+            if (existingIdx >= 0) {
+                this._tray.bodies.splice(existingIdx, 1)
+            }
+        }
 
         this.broadcastTrayState()
     }
@@ -470,6 +541,8 @@ class PrototypeEnvironment extends SceneEnvironment {
                 }))
                 : []
 
+            const joints = this.extractJointInfo(visual?.parser, asm)
+
             return {
                 index: i,
                 name: this._assemblyNames[i] ?? "Unnamed Assembly",
@@ -477,14 +550,59 @@ class PrototypeEnvironment extends SceneEnvironment {
                     jointGuid: m.jointGuid,
                     mode: m.mode,
                     targetValue: m.targetValue,
+                    maxForce: m.maxForce,
+                    maxTorque: m.maxTorque,
                 })),
                 rigidNodes,
+                joints,
+                initialLinearVelocity: asm.initialLinearVelocity,
+                initialAngularVelocity: asm.initialAngularVelocity,
             }
         })
 
         window.dispatchEvent(new CustomEvent("ovenResult", {
-            detail: { action: "trayUpdated", assemblies },
+            detail: {
+                action: "trayUpdated",
+                assemblies,
+                environment: { groundEnabled: this._groundEnabled },
+            },
         }))
+    }
+
+    private extractJointInfo(
+        parser: MirabufParser | undefined,
+        asm: OvenTrayAssembly,
+    ): { jointGuid: string; name: string; motionType: "revolute" | "slider" | "rigid" | "unknown"; hasMotor: boolean }[] {
+        if (!parser) return []
+
+        const jointData = parser.assembly.data?.joints
+        if (!jointData?.jointInstances || !jointData?.jointDefinitions) return []
+
+        const motorGuids = new Set((asm.motors ?? []).map(m => m.jointGuid))
+        const result: { jointGuid: string; name: string; motionType: "revolute" | "slider" | "rigid" | "unknown"; hasMotor: boolean }[] = []
+
+        for (const [guid, inst] of Object.entries(jointData.jointInstances)) {
+            if (guid === GROUNDED_JOINT_ID) continue
+
+            const rnA = parser.partToNodeMap.get(inst.parentPart!)
+            const rnB = parser.partToNodeMap.get(inst.childPart!)
+            if (!rnA || !rnB || rnA.id === rnB.id) continue
+
+            const jDef = jointData.jointDefinitions[inst.jointReference!] as mirabuf.joint.Joint | undefined
+            const motionType = jDef?.jointMotionType
+
+            let motionLabel: "revolute" | "slider" | "rigid" | "unknown"
+            if (motionType === mirabuf.joint.JointMotion.REVOLUTE) motionLabel = "revolute"
+            else if (motionType === mirabuf.joint.JointMotion.SLIDER) motionLabel = "slider"
+            else if (motionType === mirabuf.joint.JointMotion.RIGID) motionLabel = "rigid"
+            else motionLabel = "unknown"
+
+            const name = jDef?.info?.name ?? inst.info?.name ?? guid.slice(0, 12)
+
+            result.push({ jointGuid: guid, name, motionType: motionLabel, hasMotor: motorGuids.has(guid) })
+        }
+
+        return result
     }
 
     private broadcastEditingState(): void {
